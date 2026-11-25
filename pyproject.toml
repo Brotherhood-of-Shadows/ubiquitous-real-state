@@ -1,6 +1,6 @@
 [project]
 name = "imob"
-version = "0.1.0"
+version = "0.2.0"
 description = "Agregador, sincronizador incremental, API REST e painel web de imóveis de Pato Branco - PR"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,7 +12,9 @@ dependencies = [
     "lxml>=5.3.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
+    "pymysql[rsa]>=1.1.1",
     "sqlalchemy>=2.0.36",
+    "tzdata>=2024.1",
     "uvicorn[standard]>=0.32.0",
 ]
 

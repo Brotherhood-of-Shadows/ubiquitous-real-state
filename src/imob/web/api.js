@@ -164,8 +164,9 @@ const DEFAULT_TIMEOUT_MS = 20_000;
  * @property {number} total_agencies
  * @property {string[]} active_agencies
  * @property {boolean} auto_sync_enabled
- * @property {number} sync_interval_hours
- * @property {string|null} next_timer_check_at
+ * @property {string[]} sync_schedule
+ * @property {string} sync_timezone
+ * @property {string|null} next_scheduled_run_at
  */
 
 /**
@@ -400,7 +401,7 @@ function parsePropertyDetail(raw) {
 /**
  * Execute a JSON HTTP request with finite timeout and explicit error translation.
  *
- * @param {string} path Relative `/api/...` path.
+ * @param {string} path Relative `api/...` path.
  * @param {{
  *   method?: string,
  *   body?: unknown,
@@ -410,6 +411,7 @@ function parsePropertyDetail(raw) {
  * @returns {Promise<unknown>}
  */
 async function requestJson(path, options = {}) {
+  const requestPath = path.replace(/^(\.\/|\/)+/, "");
   const controller = new AbortController();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const timerId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -432,7 +434,7 @@ async function requestJson(path, options = {}) {
       serializedBody = JSON.stringify(options.body);
     }
 
-    const response = await window.fetch(path, {
+    const response = await window.fetch(requestPath, {
       method: options.method ?? "GET",
       headers,
       body: serializedBody,
@@ -446,7 +448,7 @@ async function requestJson(path, options = {}) {
       try {
         parsed = JSON.parse(rawText);
       } catch (err) {
-        throw new ApiError(`Malformed JSON response from ${path}`, {
+        throw new ApiError(`Malformed JSON response from ${requestPath}`, {
           code: "invalid_json",
           status: response.status,
           cause: err,
@@ -455,7 +457,7 @@ async function requestJson(path, options = {}) {
     }
 
     if (!response.ok) {
-      let message = `HTTP ${response.status} ao consultar ${path}`;
+      let message = `HTTP ${response.status} ao consultar ${requestPath}`;
       let code = `http_${response.status}`;
       if (typeof parsed === "object" && parsed !== null) {
         const errObj = /** @type {Record<string, unknown>} */ (parsed);
@@ -498,12 +500,12 @@ async function requestJson(path, options = {}) {
 }
 
 /**
- * Fetch global catalog metrics from `/api/stats`.
+ * Fetch global catalog metrics from `api/stats`.
  *
  * @returns {Promise<CatalogStats>}
  */
 export async function fetchStats() {
-  const raw = await requestJson("/api/stats");
+  const raw = await requestJson("api/stats");
   const r = asRecord(raw, "CatalogStats");
   return {
     active_properties: asNumber(r.active_properties, "active_properties"),
@@ -521,14 +523,14 @@ export async function fetchStats() {
 }
 
 /**
- * Fetch dynamic filter facets from `/api/facets`.
+ * Fetch dynamic filter facets from `api/facets`.
  *
  * @param {string} [purpose] Optional purpose (`aluguel` or `venda`).
  * @returns {Promise<SearchFacets>}
  */
 export async function fetchFacets(purpose = "") {
   const qs = purpose ? `?purpose=${encodeURIComponent(purpose)}` : "";
-  const raw = await requestJson(`/api/facets${qs}`);
+  const raw = await requestJson(`api/facets${qs}`);
   const r = asRecord(raw, "SearchFacets");
   return {
     property_types: asArray(r.property_types, parseFacetBucket, "property_types"),
@@ -544,7 +546,7 @@ export async function fetchFacets(purpose = "") {
  * @returns {Promise<AgencyStatusView[]>}
  */
 export async function fetchAgencies() {
-  const raw = await requestJson("/api/agencies");
+  const raw = await requestJson("api/agencies");
   return asArray(
     raw,
     (item) => {
@@ -574,7 +576,7 @@ export async function fetchAgencies() {
  */
 export async function fetchProperties(searchParams, signal) {
   const qs = searchParams.toString();
-  const path = qs ? `/api/properties?${qs}` : "/api/properties";
+  const path = qs ? `api/properties?${qs}` : "api/properties";
   const raw = await requestJson(path, { signal });
   return parsePaginatedProperties(raw);
 }
@@ -678,7 +680,7 @@ export function buildSearchBody(params, keys = {}) {
  * @returns {Promise<PaginatedProperties>}
  */
 export async function searchProperties(body, signal) {
-  const raw = await requestJson("/api/properties/search", { method: "POST", body, signal });
+  const raw = await requestJson("api/properties/search", { method: "POST", body, signal });
   return parsePaginatedProperties(raw);
 }
 
@@ -689,17 +691,17 @@ export async function searchProperties(body, signal) {
  * @returns {Promise<PropertyDetail>}
  */
 export async function fetchPropertyDetail(propertyId) {
-  const raw = await requestJson(`/api/properties/${encodeURIComponent(String(propertyId))}`);
+  const raw = await requestJson(`api/properties/${encodeURIComponent(String(propertyId))}`);
   return parsePropertyDetail(raw);
 }
 
 /**
- * Poll live runtime synchronization progress.
+ * Poll live runtime synchronization progress and fixed schedule metadata.
  *
  * @returns {Promise<SyncRuntimeStatus>}
  */
 export async function fetchSyncStatus() {
-  const raw = await requestJson("/api/sync/status");
+  const raw = await requestJson("api/sync/status");
   const r = asRecord(raw, "SyncRuntimeStatus");
   return {
     is_running: asBoolean(r.is_running),
@@ -707,8 +709,9 @@ export async function fetchSyncStatus() {
     total_agencies: asNumber(r.total_agencies, "total_agencies"),
     active_agencies: asArray(r.active_agencies ?? [], (s) => asString(s, "slug"), "active_agencies"),
     auto_sync_enabled: asBoolean(r.auto_sync_enabled),
-    sync_interval_hours: asNumber(r.sync_interval_hours, "sync_interval_hours"),
-    next_timer_check_at: asNullableString(r.next_timer_check_at),
+    sync_schedule: asArray(r.sync_schedule ?? [], (s) => asString(s, "sync_schedule"), "sync_schedule"),
+    sync_timezone: asString(r.sync_timezone, "sync_timezone"),
+    next_scheduled_run_at: asNullableString(r.next_scheduled_run_at),
   };
 }
 
@@ -725,7 +728,7 @@ export async function fetchSyncStatus() {
  * @returns {Promise<MapCatalog>}
  */
 export async function fetchMapCatalog(quadra = null) {
-  const raw = await requestJson(`/api/maps${quadra === null ? "" : `?quadra=${quadra}`}`);
+  const raw = await requestJson(`api/maps${quadra === null ? "" : `?quadra=${quadra}`}`);
   const r = asRecord(raw, "MapCatalog");
   const resource = (value) => {
     const item = asRecord(value, "MapResource");

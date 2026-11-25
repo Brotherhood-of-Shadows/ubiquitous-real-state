@@ -8,7 +8,9 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Select, and_, case, delete, false, func, or_, select, text, tuple_
+from sqlalchemy import Engine, Select, and_, case, delete, false, func, or_, select, tuple_
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.mysql import match as mysql_match
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload, selectinload, sessionmaker
 
@@ -46,7 +48,11 @@ from imob.domain.similarity import (
 from imob.errors import EntityNotFoundError, PersistenceError
 from imob.ports import UpsertBatchOutcome
 
-from .orm import AgencyRow, PriceHistoryRow, PropertyMatchRow, PropertyRow, SyncRunRow
+from .locks import STARTUP_LOCK_TIMEOUT_SECONDS, MySqlNamedLock
+from .orm import FULLTEXT_COLUMNS, AgencyRow, PriceHistoryRow, PropertyMatchRow, PropertyRow, SyncRunRow
+
+_FULLTEXT_SEARCH_COLUMNS = tuple(getattr(PropertyRow, name) for name in FULLTEXT_COLUMNS)
+SYNC_LOCK_NAME = "imob_sync"
 
 _PROPERTY_TYPE_LABELS: dict[str, str] = {
     PropertyType.APARTMENT.value: "Apartamento",
@@ -83,12 +89,29 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC)
 
 
+_FTS_OPERATORS = re.compile(r'[+\-<>()~*"@]')
+_FTS_MAX_TOKENS = 8
+_FTS_MIN_TOKEN_CHARS = 2
+
+
 def _build_fts_match_expression(raw_query: str) -> str | None:
-    tokens = re.findall(r"[\wÀ-ÿ0-9]+", raw_query, flags=re.UNICODE)
-    safe_tokens = [tok for tok in tokens if len(tok) >= 2][:8]
+    """Build a MySQL boolean-mode query requiring every token as a prefix (`+tok* +tok2*`).
+
+    Tokens shorter than 2 characters are dropped (the server indexes tokens of 2+ characters),
+    at most 8 tokens are kept, and boolean operators are stripped so user input cannot alter
+    the query structure.
+    """
+    cleaned = _FTS_OPERATORS.sub(" ", raw_query)
+    tokens = re.findall(r"\w+", cleaned, flags=re.UNICODE)
+    safe_tokens = [tok for tok in tokens if len(tok) >= _FTS_MIN_TOKEN_CHARS][:_FTS_MAX_TOKENS]
     if not safe_tokens:
         return None
-    return " AND ".join(f'"{tok}"*' for tok in safe_tokens)
+    return " ".join(f"+{tok}*" for tok in safe_tokens)
+
+
+def _fulltext_match(expression: str) -> Any:
+    """`MATCH(<ft_properties_search columns>) AGAINST (:expr IN BOOLEAN MODE)`."""
+    return mysql_match(*_FULLTEXT_SEARCH_COLUMNS, against=expression).in_boolean_mode()
 
 
 def _prices_differ(old_val: float | None, new_val: float | None) -> bool:
@@ -100,7 +123,7 @@ def _prices_differ(old_val: float | None, new_val: float | None) -> bool:
 
 
 class SqlAlchemyPropertyRepository:
-    """Concrete SQLite/SQLAlchemy implementation of `PropertyRepositoryProtocol`."""
+    """Concrete MySQL/SQLAlchemy implementation of `PropertyRepositoryProtocol`."""
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         """Initialize repository with a scoped session factory.
@@ -110,37 +133,68 @@ class SqlAlchemyPropertyRepository:
         """
         self._session_factory = session_factory
 
-    def seed_agencies(self, agencies: tuple[AgencyConfig, ...]) -> None:
-        """Upsert all registered agencies into the `agencies` table.
+    def _engine(self) -> Engine:
+        with self._session_factory() as session:
+            bind = session.get_bind()
+        return bind if isinstance(bind, Engine) else bind.engine
+
+    def try_acquire_sync_lock(self) -> MySqlNamedLock | None:
+        """Take the cross-process sync lock without waiting.
+
+        Returns:
+            The held lock (call `release()` when done), or `None` when another process holds it.
+
+        Raises:
+            PersistenceError: When the database cannot be reached.
+        """
+        lock = MySqlNamedLock(self._engine(), SYNC_LOCK_NAME)
+        try:
+            acquired = lock.try_acquire()
+        except SQLAlchemyError as exc:
+            raise PersistenceError(f"Failed to acquire the sync lock: {type(exc).__name__}") from exc
+        return lock if acquired else None
+
+    def seed_agencies(self, agencies: tuple[AgencyConfig, ...], *, sync_lock_held: bool = False) -> None:
+        """Upsert all registered agencies into `agencies` and rebuild similarity groups under the sync lock.
 
         Args:
             agencies: Registered agency configurations.
+            sync_lock_held: Set `True` when the caller already holds the database-scoped `imob_sync` lock.
 
         Raises:
-            PersistenceError: When database write fails.
+            PersistenceError: When the sync lock times out or the database write fails.
         """
+        if not agencies:
+            return
+        records = [
+            dict(slug=cfg.slug, name=cfg.name, base_url=cfg.base_url, platform=cfg.platform.value)
+            for cfg in sorted(agencies, key=lambda agency: agency.slug)
+        ]
+        stmt = mysql_insert(AgencyRow).values(records)
+        lock: MySqlNamedLock | None = None
+        if not sync_lock_held:
+            lock = MySqlNamedLock(self._engine(), SYNC_LOCK_NAME)
+            try:
+                acquired = lock.try_acquire(STARTUP_LOCK_TIMEOUT_SECONDS)
+            except SQLAlchemyError as exc:
+                raise PersistenceError(f"Failed to acquire the sync lock: {type(exc).__name__}") from exc
+            if not acquired:
+                raise PersistenceError("Timed out waiting for the sync lock while seeding agencies.")
         try:
             with self._session_factory() as session, session.begin():
-                existing = {row.slug: row for row in session.scalars(select(AgencyRow)).all()}
-                for cfg in agencies:
-                    row = existing.get(cfg.slug)
-                    if row is None:
-                        session.add(
-                            AgencyRow(
-                                slug=cfg.slug,
-                                name=cfg.name,
-                                base_url=cfg.base_url,
-                                platform=cfg.platform.value,
-                            )
-                        )
-                    else:
-                        row.name = cfg.name
-                        row.base_url = cfg.base_url
-                        row.platform = cfg.platform.value
-                session.flush()
+                session.execute(
+                    stmt.on_duplicate_key_update(
+                        name=stmt.inserted.name,
+                        base_url=stmt.inserted.base_url,
+                        platform=stmt.inserted.platform,
+                    )
+                )
                 _rebuild_similarity_groups(session)
         except SQLAlchemyError as exc:
             raise PersistenceError(f"Failed to seed agencies: {exc}") from exc
+        finally:
+            if lock is not None:
+                lock.release()
 
     def list_agencies(self) -> tuple[AgencyStatusView, ...]:
         """List all agencies alongside active/total property counts and last sync status.
@@ -581,7 +635,7 @@ class SqlAlchemyPropertyRepository:
             raise PersistenceError(f"Failed to record failed sync for '{agency.slug}': {exc}") from exc
 
     def search_properties(self, filters: PropertyFilterParams) -> PaginatedProperties:
-        """Execute a rich multi-filter property search with FTS5, sorting, and deduplication stats.
+        """Execute a rich multi-filter property search with FULLTEXT, sorting, and deduplication stats.
 
         Args:
             filters: Validated search filter parameters.
@@ -614,7 +668,7 @@ class SqlAlchemyPropertyRepository:
                 if filters.deduplicate:
                     group_partition = func.coalesce(
                         PropertyRow.dedup_group_key,
-                        func.printf("unique-%d", PropertyRow.id),
+                        func.concat("unique-", PropertyRow.id),
                     )
                     rn_col = (
                         func.row_number()
@@ -1154,10 +1208,7 @@ def _build_filter_conditions(filters: PropertyFilterParams, price_expr: Any) -> 
             func.lower(PropertyRow.ref_code) == q_clean.lower(),
         )
         if fts_expr:
-            fts_subq = text(
-                "SELECT rowid FROM properties_fts WHERE properties_fts MATCH :fts_q"
-            ).bindparams(fts_q=fts_expr)
-            conds.append(or_(PropertyRow.id.in_(fts_subq), exact_code_cond))
+            conds.append(or_(_fulltext_match(fts_expr), exact_code_cond))
         else:
             conds.append(exact_code_cond)
 
@@ -1297,6 +1348,13 @@ def _similarity_listing(row: PropertyRow) -> SimilarityListing:
     )
 
 
+def _ordered_pair(first_id: int, second_id: int) -> tuple[int, int]:
+    """Return a pair as `(smaller, larger)`; the database no longer checks this order (MySQL 3823)."""
+    if first_id == second_id:
+        raise PersistenceError(f"Refusing to store a similarity pair of property {first_id} with itself")
+    return (first_id, second_id) if first_id < second_id else (second_id, first_id)
+
+
 def _rebuild_similarity_groups(session: Session) -> None:
     rows = session.scalars(select(PropertyRow).order_by(PropertyRow.id)).all()
     pairs = find_similarity_pairs(tuple(_similarity_listing(row) for row in rows if row.is_active))
@@ -1305,14 +1363,15 @@ def _rebuild_similarity_groups(session: Session) -> None:
     session.add_all(
         [
             PropertyMatchRow(
-                left_id=pair.left_id,
-                right_id=pair.right_id,
+                left_id=left_id,
+                right_id=right_id,
                 level=pair.assessment.level,
                 score=pair.assessment.score,
                 reasons_json=json.dumps(pair.assessment.reasons, ensure_ascii=False),
                 uncertainties_json=json.dumps(pair.assessment.uncertainties, ensure_ascii=False),
             )
             for pair in pairs
+            for left_id, right_id in (_ordered_pair(pair.left_id, pair.right_id),)
         ]
     )
     for row in rows:

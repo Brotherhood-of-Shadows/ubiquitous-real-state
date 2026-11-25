@@ -21,14 +21,14 @@ async def map_catalog(
 ) -> MapCatalog:
     """List public map sources and local PDF availability."""
     settings: AppSettings = request.app.state.settings
-    return await asyncio.to_thread(get_map_catalog, settings.db_path.parent, quadra)
+    return await asyncio.to_thread(get_map_catalog, settings.maps_dir, quadra)
 
 
 @router.get("/quadras/{quadra}/pdf", response_class=FileResponse)
 async def quadra_pdf(quadra: QuadraNumber, request: Request) -> FileResponse:
     """Open one imported quadra PDF inline in the browser."""
     settings: AppSettings = request.app.state.settings
-    path = await asyncio.to_thread(get_quadra_pdf, settings.db_path.parent, quadra)
+    path = await asyncio.to_thread(get_quadra_pdf, settings.maps_dir, quadra)
     return FileResponse(
         path,
         media_type="application/pdf",

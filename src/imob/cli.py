@@ -20,12 +20,7 @@ from pathlib import Path
 import uvicorn
 
 from imob.config import AppSettings, resolve_app_root
-from imob.db.engine import (
-    create_session_factory,
-    create_sqlite_engine,
-    ensure_fts5_objects,
-    run_migrations,
-)
+from imob.db.engine import create_mysql_engine, create_session_factory, run_migrations
 from imob.db.repository import SqlAlchemyPropertyRepository
 from imob.domain.registry import AGENCIES
 from imob.maps import import_quadra_pdfs
@@ -64,8 +59,8 @@ def _build_parser() -> argparse.ArgumentParser:
     maps_p = sub.add_parser("maps-import", help="Importa PDFs públicos das quadras para consulta local")
     maps_p.add_argument("directory", type=Path, help="Pasta com arquivos 0928.pdf ou Quadra_0928.pdf")
 
-    sub.add_parser("stats", help="Exibe resumo estatístico do banco local SQLite")
-    sub.add_parser("migrate", help="Aplica migrações Alembic e índice FTS5 no SQLite")
+    sub.add_parser("stats", help="Exibe resumo estatístico do banco MySQL")
+    sub.add_parser("migrate", help="Aplica as migrações Alembic no banco MySQL")
     return parser
 
 
@@ -117,14 +112,10 @@ def _open_browser_when_ready(url: str) -> None:
 
 
 async def _cmd_sync(settings: AppSettings, agencies: tuple[str, ...], force: bool) -> int:
-    run_migrations(settings.db_path)
-    engine = create_sqlite_engine(settings.db_path)
-    ensure_fts5_objects(engine)
-    session_factory = create_session_factory(engine)
-    repo = SqlAlchemyPropertyRepository(session_factory)
-    repo.seed_agencies(AGENCIES)
-
+    engine = create_mysql_engine(settings)
     try:
+        run_migrations(engine)
+        repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
         async with PoliteHttpClient(
             timeout_seconds=settings.http_timeout_seconds,
             per_domain_delay_seconds=settings.per_domain_delay_seconds,
@@ -155,15 +146,14 @@ async def _cmd_sync(settings: AppSettings, agencies: tuple[str, ...], force: boo
 
 
 def _cmd_stats(settings: AppSettings) -> int:
-    run_migrations(settings.db_path)
-    engine = create_sqlite_engine(settings.db_path)
-    ensure_fts5_objects(engine)
-    repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
-    repo.seed_agencies(AGENCIES)
+    engine = create_mysql_engine(settings)
     try:
+        run_migrations(engine)
+        repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
+        repo.seed_agencies(AGENCIES)
         st = repo.get_stats()
         print("=== Banco de Imóveis — Pato Branco / PR ===")
-        print(f"  Arquivo SQLite         : {settings.db_path}")
+        print(f"  Banco MySQL            : {settings.database_label}")
         print(f"  Imobiliárias sincroniz.: {st.agencies_synced}/{st.agencies_total}")
         print(
             f"  Imóveis ativos         : {st.active_properties} "
@@ -196,6 +186,7 @@ def _run_serve(
         updates["auto_sync_enabled"] = False
 
     effective = base_settings.model_copy(update=updates)
+    _ = effective.database_url  # Fail closed before binding when MySQL credentials are missing.
 
     if port_arg is None:
         if _is_imob_already_running(effective.host, effective.port):
@@ -213,7 +204,7 @@ def _run_serve(
     print("=" * 68)
     print(f"  IMOB PATO BRANCO — Painel Unificado ({len(AGENCIES)} imobiliárias)")
     print(f"  Painel no navegador : {ui_url}")
-    print(f"  Banco SQLite local  : {effective.db_path}")
+    print(f"  Banco MySQL         : {effective.database_label}")
     print("  Mantenha esta janela aberta enquanto utiliza o painel.")
     print("  Para encerrar, feche esta janela ou pressione Ctrl+C.")
     print("=" * 68)
@@ -244,18 +235,19 @@ def main(argv: list[str] | None = None) -> None:
         base_settings = AppSettings()
 
         if args.command == "maps-import":
-            imported, skipped = import_quadra_pdfs(base_settings.db_path.parent, args.directory)
+            imported, skipped = import_quadra_pdfs(base_settings.maps_dir, args.directory)
             print(f"PDFs importados: {len(imported)} | Arquivos sem quadra identificável: {len(skipped)}")
             for filename in skipped:
                 print(f"  Não importado: {filename}")
             return
 
         if args.command == "migrate":
-            run_migrations(base_settings.db_path)
-            engine = create_sqlite_engine(base_settings.db_path)
-            ensure_fts5_objects(engine)
-            engine.dispose()
-            print(f"Migrações aplicadas com sucesso em {base_settings.db_path}")
+            engine = create_mysql_engine(base_settings)
+            try:
+                run_migrations(engine)
+            finally:
+                engine.dispose()
+            print(f"Migrações aplicadas com sucesso em {base_settings.database_label}")
             return
 
         if args.command == "stats":

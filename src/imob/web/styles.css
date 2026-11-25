@@ -737,6 +737,22 @@ textarea {
 .photo-viewer > img { display: block; width: 100%; height: 80vh; object-fit: contain; }
 .photo-controls { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; }
 
+.detail-action-bar {
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.detail-section {
+  margin-bottom: 16px;
+}
+
+.duplicate-peer-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
 .similarity-review { margin-bottom: 16px; }
 .similarity-candidate { padding: 12px 0; border-top: 1px solid var(--border); }
 .similarity-candidate p { margin: 6px 0; }

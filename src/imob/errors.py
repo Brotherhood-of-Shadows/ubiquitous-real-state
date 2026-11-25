@@ -98,3 +98,18 @@ class DomainValidationError(ImobError):
             message: Explanation of the invalid value or filter combination.
         """
         super().__init__(message, code="validation_error")
+
+
+class ConfigurationError(ImobError):
+    """Raised when required runtime configuration is missing or invalid.
+
+    Messages name the offending setting and never include its value.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Initialize configuration failure.
+
+        Args:
+            message: Description naming the missing or invalid setting.
+        """
+        super().__init__(message, code="configuration_error")

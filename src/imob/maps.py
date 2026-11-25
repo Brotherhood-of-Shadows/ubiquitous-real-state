@@ -83,22 +83,22 @@ def _validate_quadra(quadra: int) -> None:
         raise DomainValidationError("A quadra deve estar entre 1 e 2500")
 
 
-def _pdf_path(data_root: Path, quadra: int) -> Path:
+def _pdf_path(maps_dir: Path, quadra: int) -> Path:
     _validate_quadra(quadra)
-    return data_root / "maps" / "quadras" / f"{quadra:04d}.pdf"
+    return maps_dir / "quadras" / f"{quadra:04d}.pdf"
 
 
-def get_map_catalog(data_root: Path, quadra: int | None = None) -> MapCatalog:
+def get_map_catalog(maps_dir: Path, quadra: int | None = None) -> MapCatalog:
     """Return map links and local PDF availability, optionally selecting a quadra."""
     selected = None
     if quadra is not None:
-        path = _pdf_path(data_root, quadra)
+        path = _pdf_path(maps_dir, quadra)
         group = next(group for group in _RANGES if group.start <= quadra <= group.end)
         selected = QuadraMapView(
             quadra=quadra, label=f"{quadra:04d}", folder_url=group.url, local_pdf=path.is_file()
         )
     try:
-        folder = data_root / "maps" / "quadras"
+        folder = maps_dir / "quadras"
         local = tuple(
             sorted(
                 int(path.stem)
@@ -114,17 +114,17 @@ def get_map_catalog(data_root: Path, quadra: int | None = None) -> MapCatalog:
     return MapCatalog(ranges=_RANGES, resources=_RESOURCES, selected=selected, local_quadras=local)
 
 
-def get_quadra_pdf(data_root: Path, quadra: int) -> Path:
+def get_quadra_pdf(maps_dir: Path, quadra: int) -> Path:
     """Resolve one imported quadra PDF, raising not-found when unavailable."""
-    path = _pdf_path(data_root, quadra)
+    path = _pdf_path(maps_dir, quadra)
     if not path.is_file():
         raise EntityNotFoundError("PDF da quadra", quadra)
     return path
 
 
-def save_quadra_pdf(data_root: Path, quadra: int, content: bytes) -> QuadraMapView:
+def save_quadra_pdf(maps_dir: Path, quadra: int, content: bytes) -> QuadraMapView:
     """Store a user-selected PDF atomically with a bounded size and a fixed filename."""
-    target = _pdf_path(data_root, quadra)
+    target = _pdf_path(maps_dir, quadra)
     if len(content) > MAX_PDF_BYTES or not content.startswith(b"%PDF-"):
         raise DomainValidationError("Selecione um PDF válido de até 20 MB")
     try:
@@ -139,7 +139,7 @@ def save_quadra_pdf(data_root: Path, quadra: int, content: bytes) -> QuadraMapVi
     return QuadraMapView(quadra=quadra, label=f"{quadra:04d}", folder_url=group.url, local_pdf=True)
 
 
-def import_quadra_pdfs(data_root: Path, source: Path) -> tuple[tuple[int, ...], tuple[str, ...]]:
+def import_quadra_pdfs(maps_dir: Path, source: Path) -> tuple[tuple[int, ...], tuple[str, ...]]:
     """Import maps named 0928.pdf or Quadra_0928.pdf; skip ambiguous filenames.
 
     Duplicate identifiers fail before writing. Returns imported quadras and skipped PDF names.
@@ -163,7 +163,7 @@ def import_quadra_pdfs(data_root: Path, source: Path) -> tuple[tuple[int, ...], 
         for quadra, path in planned.items():
             if path.stat().st_size > MAX_PDF_BYTES:
                 raise DomainValidationError(f"PDF da quadra {quadra:04d} excede 20 MB")
-            save_quadra_pdf(data_root, quadra, path.read_bytes())
+            save_quadra_pdf(maps_dir, quadra, path.read_bytes())
     except OSError as exc:
         raise PersistenceError("Não foi possível importar os PDFs das quadras") from exc
     return tuple(sorted(planned)), tuple(skipped)

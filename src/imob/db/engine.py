@@ -1,107 +1,45 @@
-"""SQLite SQLAlchemy engine creation, connection PRAGMAs, and FTS5 DDL helpers."""
+"""MySQL SQLAlchemy engine creation, session factory, health probe, and Alembic migrations."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy import Engine, create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from imob.config import resolve_app_root
+from imob.config import AppSettings, resolve_app_root
+from imob.errors import ConfigurationError, PersistenceError
 
-FTS5_STATEMENTS: tuple[str, ...] = (
-    """
-    CREATE VIRTUAL TABLE IF NOT EXISTS properties_fts USING fts5(
-        title,
-        neighborhood,
-        street,
-        building_name,
-        ref_code,
-        description,
-        content='properties',
-        content_rowid='id',
-        tokenize='unicode61 remove_diacritics 2'
-    );
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_properties_fts_ai AFTER INSERT ON properties BEGIN
-        INSERT INTO properties_fts(
-            rowid, title, neighborhood, street, building_name, ref_code, description
-        )
-        VALUES (
-            new.id, coalesce(new.title, ''), coalesce(new.neighborhood, ''),
-            coalesce(new.street, ''), coalesce(new.building_name, ''),
-            coalesce(new.ref_code, ''), coalesce(new.description, '')
-        );
-    END;
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_properties_fts_ad AFTER DELETE ON properties BEGIN
-        INSERT INTO properties_fts(
-            properties_fts, rowid, title, neighborhood, street, building_name, ref_code, description
-        )
-        VALUES (
-            'delete', old.id, coalesce(old.title, ''), coalesce(old.neighborhood, ''),
-            coalesce(old.street, ''), coalesce(old.building_name, ''),
-            coalesce(old.ref_code, ''), coalesce(old.description, '')
-        );
-    END;
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_properties_fts_au AFTER UPDATE ON properties BEGIN
-        INSERT INTO properties_fts(
-            properties_fts, rowid, title, neighborhood, street, building_name, ref_code, description
-        )
-        VALUES (
-            'delete', old.id, coalesce(old.title, ''), coalesce(old.neighborhood, ''),
-            coalesce(old.street, ''), coalesce(old.building_name, ''),
-            coalesce(old.ref_code, ''), coalesce(old.description, '')
-        );
-        INSERT INTO properties_fts(
-            rowid, title, neighborhood, street, building_name, ref_code, description
-        )
-        VALUES (
-            new.id, coalesce(new.title, ''), coalesce(new.neighborhood, ''),
-            coalesce(new.street, ''), coalesce(new.building_name, ''),
-            coalesce(new.ref_code, ''), coalesce(new.description, '')
-        );
-    END;
-    """,
-)
+from .locks import MIGRATION_LOCK_NAME, STARTUP_LOCK_TIMEOUT_SECONDS, MySqlNamedLock
+
+_CONNECT_TIMEOUT_SECONDS = 10
 
 
-def create_sqlite_engine(db_path: Path) -> Engine:
-    """Create a configured SQLite `Engine` with WAL mode and foreign-key enforcement.
+def create_mysql_engine(settings: AppSettings) -> Engine:
+    """Create a pooled MySQL `Engine` whose sessions read and write timestamps in UTC.
 
     Args:
-        db_path: Filesystem path to the SQLite database file.
+        settings: Runtime settings holding the `IMOB_MYSQL_*` connection values.
 
     Returns:
-        Configured SQLAlchemy `Engine`.
+        Configured SQLAlchemy `Engine` (`READ COMMITTED`, pre-ping, 30-minute recycle).
+
+    Raises:
+        ConfigurationError: When the user or password setting is missing.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    sqlite_url = f"sqlite:///{db_path.resolve().as_posix()}"
-    engine = create_engine(
-        sqlite_url,
-        connect_args={"check_same_thread": False, "timeout": 15.0},
+    return create_engine(
+        settings.database_url,
         pool_pre_ping=True,
+        pool_recycle=1800,
+        isolation_level="READ COMMITTED",
+        connect_args={
+            "init_command": "SET time_zone='+00:00'",
+            "connect_timeout": _CONNECT_TIMEOUT_SECONDS,
+        },
     )
-
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
-        cursor = dbapi_connection.cursor()
-        try:
-            cursor.execute("PRAGMA foreign_keys = ON")
-            cursor.execute("PRAGMA journal_mode = WAL")
-            cursor.execute("PRAGMA synchronous = NORMAL")
-            cursor.execute("PRAGMA busy_timeout = 10000")
-        finally:
-            cursor.close()
-
-    return engine
 
 
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
@@ -116,28 +54,51 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
 
 
-def run_migrations(db_path: Path) -> None:
-    """Apply Alembic schema migrations up to `head` for `db_path`.
+def ping_database(engine: Engine) -> bool:
+    """Return whether the database answers `SELECT 1`.
 
     Args:
-        db_path: Filesystem path to the target SQLite database.
+        engine: Target SQLAlchemy engine.
+
+    Returns:
+        `True` when the query succeeds, `False` on any database error.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    project_root = resolve_app_root()
-    ini_path = project_root / "alembic.ini"
-    sqlite_url = f"sqlite:///{db_path.resolve().as_posix()}".replace("%", "%%")
-    cfg = AlembicConfig(str(ini_path))
-    cfg.set_main_option("script_location", str(project_root / "migrations").replace("%", "%%"))
-    cfg.set_main_option("sqlalchemy.url", sqlite_url)
-    command.upgrade(cfg, "head")
+    try:
+        with engine.connect() as conn:
+            return bool(conn.scalar(text("SELECT 1")) == 1)
+    except SQLAlchemyError:
+        return False
 
 
-def ensure_fts5_objects(engine: Engine) -> None:
-    """Ensure SQLite FTS5 virtual table and sync triggers exist on `engine`.
+def _migrations_dir() -> Path:
+    migrations = resolve_app_root() / "migrations"
+    if not (migrations / "env.py").is_file():
+        raise ConfigurationError(
+            f"Alembic migrations not found under {migrations}; set IMOB_APP_ROOT to the application root"
+        )
+    return migrations
+
+
+def run_migrations(engine: Engine) -> None:
+    """Apply the MySQL Alembic migrations up to `head` on `engine`.
+
+    The connection is handed to Alembic through `Config.attributes`, so no URL or password is ever
+    written into the Alembic configuration.
 
     Args:
         engine: Target SQLAlchemy engine.
     """
-    with engine.begin() as conn:
-        for stmt in FTS5_STATEMENTS:
-            conn.execute(text(stmt))
+    migrations = _migrations_dir()
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", str(migrations).replace("%", "%%"))
+    cfg.set_main_option("path_separator", "os")
+    cfg.set_main_option("version_locations", str(migrations / "mysql_versions").replace("%", "%%"))
+    lock = MySqlNamedLock(engine, MIGRATION_LOCK_NAME)
+    if not lock.try_acquire(STARTUP_LOCK_TIMEOUT_SECONDS):
+        raise PersistenceError("Timed out waiting for another IMOB process to finish database migrations.")
+    try:
+        with engine.begin() as connection:
+            cfg.attributes["connection"] = connection
+            command.upgrade(cfg, "head")
+    finally:
+        lock.release()

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from sqlalchemy import Engine
 
 from imob.api.schemas import PropertySearchRequest
+from imob.db.engine import ping_database
 from imob.domain.enums import FurnishedStatus, ListingPurpose, PropertyType, SortOrder
 from imob.domain.models import (
     MAX_QUERY_LENGTH,
@@ -65,13 +69,22 @@ def _split_csv_list(values: list[str] | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
-@router.get("/health")
-async def health_check() -> dict[str, str]:
-    """Return service liveness status.
+@router.get("/health", response_model=None)
+async def health_check(request: Request) -> dict[str, str] | JSONResponse:
+    """Return service health, including a `SELECT 1` database probe.
+
+    Args:
+        request: Incoming HTTP request (the engine lives in application state).
 
     Returns:
-        Simple status dictionary.
+        `{"status": "ok", ...}`, or HTTP 503 when MySQL is unreachable.
     """
+    engine: Engine = request.app.state.engine
+    if not await asyncio.to_thread(ping_database, engine):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "city": "Pato Branco - PR", "database": "unreachable"},
+        )
     return {"status": "ok", "city": "Pato Branco - PR"}
 
 
@@ -127,7 +140,10 @@ async def search_properties(
     catalog: Annotated[CatalogService, Depends(get_catalog_service)],
     q: Annotated[
         str | None,
-        Query(max_length=MAX_QUERY_LENGTH, description="Busca textual FTS5 ou código do imóvel"),
+        Query(
+            max_length=MAX_QUERY_LENGTH,
+            description="Busca textual (FULLTEXT, por prefixo) ou código do imóvel",
+        ),
     ] = None,
     purpose: Annotated[ListingPurpose | None, Query()] = None,
     types: Annotated[list[str] | None, Query(description="Tipos de imóvel (CSV ou repetido)")] = None,
@@ -166,7 +182,7 @@ async def search_properties(
 
     Args:
         catalog: Injected `CatalogService`.
-        q: Optional FTS5 full-text query or reference code.
+        q: Optional FULLTEXT prefix query or reference code.
         purpose: Transaction purpose (`aluguel`, `venda`, `venda_e_aluguel`).
         types: Property categories to include.
         neighborhoods: Neighborhood names or slugs to include.
@@ -300,7 +316,7 @@ async def get_property_detail(
 async def get_sync_status(
     sync_service: Annotated[SyncService, Depends(get_sync_service)],
 ) -> SyncRuntimeStatus:
-    """Return live progress of any active sync run, timer interval, and last report.
+    """Return live progress of any active sync run, fixed schedule, next scheduled run, and last report.
 
     Args:
         sync_service: Injected `SyncService`.

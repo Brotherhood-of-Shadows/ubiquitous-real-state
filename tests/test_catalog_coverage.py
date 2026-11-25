@@ -3,19 +3,18 @@
 from __future__ import annotations
 
 from collections import Counter
-from pathlib import Path
 
 import httpx
 import pytest
 
 from imob.api.app import create_app
-from imob.config import AppSettings
 from imob.domain.enums import ListingPurpose, PlatformKind, SyncStatus
 from imob.domain.normalizer import normalize_scraped_item
 from imob.domain.registry import AGENCIES, AGENCIES_BY_SLUG
 from imob.scrapers import PlatformScraperRegistry
 from imob.scrapers.http_client import PoliteHttpClient
 from imob.scrapers.widesys import parse_widesys_listing_html
+from tests.conftest import MySqlTestDatabase
 
 
 def test_registry_includes_new_sources_once_with_catalog_engines() -> None:
@@ -69,7 +68,7 @@ def test_registry_includes_new_sources_once_with_catalog_engines() -> None:
 
 @pytest.mark.asyncio
 async def test_html_source_is_visible_and_syncs_through_the_real_service(
-    tmp_path: Path,
+    mysql_db: MySqlTestDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exercise registry wiring, HTML parsing, normalization, persistence, and API stats together."""
@@ -91,7 +90,7 @@ async def test_html_source_is_visible_and_syncs_through_the_real_service(
         )
 
     monkeypatch.setattr(PoliteHttpClient, "post_text", post_text)
-    app = create_app(AppSettings(db_path=tmp_path / "catalog.db", auto_sync_enabled=False))
+    app = create_app(mysql_db.settings)
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client,

@@ -65,17 +65,36 @@ const FURNISHED_LABELS = {
 };
 
 /**
- * Normalize an external URL, permitting only `http:` or `https:` schemes.
+ * Normalize an external or app-relative URL, permitting only `http:` or `https:` schemes.
+ *
+ * App-local paths are resolved relative to the current application path so a stripped reverse-proxy
+ * prefix is preserved, while external agency URLs remain independent of that prefix.
  *
  * @param {string|null|undefined} rawUrl
  * @returns {string|null}
  */
-function safeHttpUrl(rawUrl) {
+export function safeHttpUrl(rawUrl) {
   if (!rawUrl) {
     return null;
   }
   try {
-    const parsed = new URL(rawUrl, window.location.origin);
+    const trimmed = rawUrl.trim();
+    if (!trimmed) {
+      return null;
+    }
+    const normalized =
+      trimmed.startsWith("/") && !trimmed.startsWith("//")
+        ? trimmed.replace(/^\/+/, "")
+        : trimmed;
+    const base = new URL(
+      typeof window !== "undefined" && window.location?.href
+        ? window.location.href
+        : "http://localhost/"
+    );
+    if (!base.pathname.endsWith("/") && !base.pathname.endsWith(".html")) {
+      base.pathname = `${base.pathname}/`;
+    }
+    const parsed = new URL(normalized, base);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") {
       return parsed.href;
     }
@@ -444,7 +463,7 @@ export class DashboardController {
   }
 
   /**
-   * Debounce text/numeric filter typing before querying `/api/properties`.
+   * Debounce text and numeric filter changes before refreshing the listings.
    *
    * @returns {void}
    */
@@ -1326,7 +1345,7 @@ export class DashboardController {
     bodyEl.replaceChildren();
 
     // Action bar at top of modal
-    const actionBar = createEl("div", { className: "topbar-actions", attrs: { style: "margin-bottom: 14px; flex-wrap: wrap;" } });
+    const actionBar = createEl("div", { className: "topbar-actions detail-action-bar" });
     const srcHref = safeHttpUrl(detail.source_url);
     if (srcHref) {
       actionBar.appendChild(
@@ -1452,7 +1471,7 @@ export class DashboardController {
     if (detail.duplicate_peers.length > 0) {
       const peerPanel = createEl(
         "div",
-        { className: "detail-panel", attrs: { style: "margin-bottom: 16px;" } },
+        { className: "detail-panel detail-section" },
         createEl("h3", {
           text: `Possível mesmo imóvel — evidências de similaridade (${detail.duplicate_peers.length})`,
         })
@@ -1465,7 +1484,7 @@ export class DashboardController {
         const peerLink = safeHttpUrl(peer.source_url);
         const row = createEl(
           "div",
-          { attrs: { style: "display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #e2e8f0;" } },
+          { className: "duplicate-peer-row" },
           createEl("span", {
             text: `${peer.agency_name} (Ref: ${peer.ref_code ?? peer.id}) — ${peerPrice}. ${peer.match_reasons.join("; ")}. ${peer.match_uncertainties.join("; ")}`,
           }),
@@ -1508,7 +1527,7 @@ export class DashboardController {
     if (detail.price_history.length > 0) {
       const histPanel = createEl(
         "div",
-        { className: "detail-panel", attrs: { style: "margin-bottom: 16px;" } },
+        { className: "detail-panel detail-section" },
         createEl("h3", { text: "Histórico de Preços Registrado" })
       );
       for (const h of detail.price_history) {
@@ -1580,9 +1599,11 @@ export class DashboardController {
       const running = syncStatus.is_running
         ? ` Atualização em andamento: ${syncStatus.completed_agencies}/${syncStatus.total_agencies} imobiliárias concluídas.`
         : "";
+      const scheduleLabel =
+        syncStatus.sync_schedule.length > 0 ? syncStatus.sync_schedule.join(" e ") : "06:00 e 18:00";
       timerInfoEl.textContent =
         (syncStatus.auto_sync_enabled
-          ? `Catálogos atualizados automaticamente pelo servidor (cache de ${syncStatus.sync_interval_hours}h; próxima verificação: ${formatDate(syncStatus.next_timer_check_at)}).`
+          ? `Catálogos sincronizados automaticamente às ${scheduleLabel} (${syncStatus.sync_timezone}; próxima execução: ${formatDate(syncStatus.next_scheduled_run_at)}).`
           : "Atualização automática desativada neste servidor.") + running;
 
       const table = createEl("table", { className: "agencies-table" });
@@ -1669,8 +1690,8 @@ export class DashboardController {
         body.appendChild(createEl("h3", { text: `Quadra ${selected.label}` }));
         addLink(body, "Abrir a pasta oficial desta faixa de quadras ↗", selected.folder_url);
         if (selected.local_pdf) {
-          const url = `/api/maps/quadras/${selected.quadra}/pdf?v=${Date.now()}`;
-          body.appendChild(createEl("a", { className: "btn btn-outline btn-sm", text: "Abrir PDF em outra aba", attrs: { href: url, target: "_blank", rel: "noopener" } }));
+          const url = `api/maps/quadras/${selected.quadra}/pdf?v=${Date.now()}`;
+          body.appendChild(createEl("a", { className: "btn btn-outline btn-sm", text: "Abrir PDF em outra aba", attrs: { href: url, target: "_blank", rel: "noopener noreferrer" } }));
           body.appendChild(createEl("iframe", { className: "quadra-pdf", attrs: { src: url, title: `Mapa da quadra ${selected.label}` } }));
         } else {
           body.appendChild(createEl("p", { text: "Esta quadra ainda não tem PDF neste servidor. Abra a pasta oficial para consultar o mapa." }));
@@ -1688,7 +1709,9 @@ export class DashboardController {
 
 }
 
-const dashboard = new DashboardController();
-window.addEventListener("DOMContentLoaded", () => {
-  void dashboard.init();
-});
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  const dashboard = new DashboardController();
+  window.addEventListener("DOMContentLoaded", () => {
+    void dashboard.init();
+  });
+}

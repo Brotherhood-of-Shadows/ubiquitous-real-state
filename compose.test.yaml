@@ -1,0 +1,24 @@
+name: imob-test
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${IMOB_TEST_MYSQL_PASSWORD:-imob-test-only}
+      MYSQL_ROOT_HOST: "%"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-ft-min-token-size=2
+      - --innodb-ft-enable-stopword=OFF
+      - --mysqlx=OFF
+    ports:
+      - "127.0.0.1:${IMOB_TEST_MYSQL_PORT:-33306}:3306"
+    tmpfs:
+      - /var/lib/mysql:size=1g
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u root -Nse 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

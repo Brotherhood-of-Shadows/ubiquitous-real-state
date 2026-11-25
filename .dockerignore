@@ -1,0 +1,16 @@
+.git
+**/.env*
+**/.venv
+**/__pycache__
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+**/*.db*
+**/*.sqlite*
+/build
+/dist
+/data
+/maps-import
+/tests
+/docs
+/plans

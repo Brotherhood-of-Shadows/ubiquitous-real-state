@@ -1,0 +1,99 @@
+name: imob
+
+x-logging: &local-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  image: imob:local
+  init: true
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    IMOB_MYSQL_HOST: mysql
+    IMOB_MYSQL_PORT: "3306"
+    IMOB_MYSQL_USER: ${IMOB_MYSQL_USER:-imob}
+    IMOB_MYSQL_PASSWORD: ${IMOB_MYSQL_PASSWORD:?Set IMOB_MYSQL_PASSWORD in .env}
+    IMOB_MYSQL_DATABASE: ${IMOB_MYSQL_DATABASE:-imob}
+  depends_on:
+    mysql:
+      condition: service_healthy
+  networks: [default, db]
+  read_only: true
+  tmpfs: ["/tmp:size=128m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  mem_limit: 1g
+  logging: *local-logging
+
+services:
+  imob:
+    <<: *app
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${IMOB_PORT:-8090}:8000"
+    volumes:
+      - imob-maps:/var/lib/imob/maps:ro
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${IMOB_MYSQL_DATABASE:-imob}
+      MYSQL_USER: ${IMOB_MYSQL_USER:-imob}
+      MYSQL_PASSWORD: ${IMOB_MYSQL_PASSWORD:?Set IMOB_MYSQL_PASSWORD in .env}
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-ft-min-token-size=2
+      - --innodb-ft-enable-stopword=OFF
+      - --mysqlx=OFF
+    volumes:
+      - imob-mysql:/var/lib/mysql
+    networks: [db]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u \"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -Nse 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    logging: *local-logging
+
+  imob-ops: &ops
+    <<: *app
+    profiles: [ops]
+    command: [imob, --help]
+    healthcheck:
+      disable: true
+    volumes:
+      - imob-maps:/var/lib/imob/maps
+
+  imob-maps-import:
+    <<: *ops
+    profiles: [maps-import]
+    command: [imob, maps-import, /import]
+    volumes:
+      - imob-maps:/var/lib/imob/maps
+      - type: bind
+        source: ./maps-import
+        target: /import
+        read_only: true
+        bind:
+          create_host_path: false
+
+networks:
+  db:
+    internal: true
+
+volumes:
+  imob-mysql:
+  imob-maps:

@@ -1,6 +1,8 @@
 # Imob Pato Branco — Agregador & Motor de Busca Unificado
 
-API REST (**FastAPI** + **SQLAlchemy 2.0** + **SQLite WAL + FTS5**) e **Painel Web Local** para buscar, validar, comparar e acompanhar imóveis para **aluguel** e **compra/venda** em fontes públicas de **Pato Branco - PR**. São **54 fontes cadastradas com coletores configurados**. Cadastro e testes locais não comprovam coleta completa nem funcionamento atual de cada site.
+API REST (**FastAPI** + **SQLAlchemy 2.0** + **MySQL 8.4**) e **painel web público de consulta, sem login**, para buscar, comparar e acompanhar imóveis para **aluguel** e **compra/venda** em fontes públicas de **Pato Branco - PR**. São **54 fontes cadastradas com coletores configurados**. Cadastro e testes locais não comprovam coleta completa nem funcionamento atual de cada site.
+
+Na versão 0.2.0, a instalação passa a usar Docker Compose e um banco MySQL novo, sem migração do SQLite. A sincronização manual e as operações de escrita não ficam disponíveis no site.
 
 ---
 
@@ -12,22 +14,21 @@ API REST (**FastAPI** + **SQLAlchemy 2.0** + **SQLite WAL + FTS5**) e **Painel W
    - **Apresenta.me**: Imobiliária Uniq (`POST /busca` + endereço estruturado, condomínio e IPTU).
    - **WordPress MyHome REST**: Moretti Imobiliária (`/wp-json/myhome/v1/listings`).
    - **Apolar REST API**: Apolar Imóveis (`POST /properties/search/main` filtrado exclusivamente para `"city": "Pato Branco"`).
-   - **Catálogos HTML/JS (7 sites)**: Valen (`POST /pesquisa` com cidade Pato Branco), Cristian (grade paginada da página inicial), Familiar (`/busca/`), Álvaro (`/imoveis/1-venda` e `/imoveis/2-locacao`), Carlos (`/imovel/` com finalidade e cidade), Mariely Cattoni (`POST /imoveis` com paginação e filtro de Pato Branco) e Junior Gonçalves (`/imoveis-data.js`). Leitura de cartões e links de paginação publicados no mesmo domínio; enriquecimento individual somente sob demanda.
+   - **Catálogos HTML/JS (7 sites)**: Valen (`POST /pesquisa` com cidade Pato Branco), Cristian (grade paginada da página inicial), Familiar (`/busca/`), Álvaro (`/imoveis/1-venda` e `/imoveis/2-locacao`), Carlos (`/imovel/` com finalidade e cidade), Mariely Cattoni (`POST /imoveis` com paginação e filtro de Pato Branco) e Junior Gonçalves (`/imoveis-data.js`). Leitura de cartões e links de paginação publicados no mesmo domínio.
    - **Agil REST API**: Fortun (`POST /company/{id}/search`), com paginação nativa e consulta separada de venda, locação anual e temporada. Detalhes que o site marca como protegidos exigem identificação no site original.
 2. **Validação e Reconciliação Local dos Dados**:
    - **Filtro estrito de cidade**: descarta anúncios de outras cidades (ex.: Vitorino, Mariópolis, Francisco Beltrão, Pato Bragado, litoral de SC).
    - **Correção de finalidade e categoria**: detecta anúncios cadastrados incorretamente pelas imobiliárias (ex.: imóvel `"à venda"` de R$ 350 mil jogado na aba de locação; `Sobrado` cadastrado como `Casa`; `Kitnet/Studio` ou `Cobertura` cadastrado como `Apartamento`; `Sala Comercial` ou `Barracão`).
    - **Padronização de bairros de Pato Branco**: unifica grafias (`Jd. Floresta` → `Jardim Floresta`, `Dal Ross` → `Dall Ross`, `Lasalle` → `La Salle`, etc.).
-3. **Sincronização Incremental de Baixo Custo & Timer Periódico**:
-   - **Inicialização instantânea**: `uv run imob serve` abre o banco local `data/imob.db` na hora, **sem disparar requisições externas ao subir**.
-   - **Varredura por catálogo/JSON paginado**: coleta dezenas/centenas de imóveis por requisição, **nunca** varrendo imóvel por imóvel individualmente.
-   - **Timer padrão em background (`6h` TTL)**: verifica periodicamente quais imobiliárias venceram o TTL e atualiza de forma educada (rate-limit por domínio + circuit-breaker contra desativação em massa caso algum site oscile).
-   - **Enriquecimento sob demanda (`POST /api/properties/{id}/enrich`)**: busca a descrição longa, taxas ocultas de condomínio/IPTU e galeria completa apenas quando você clicar no imóvel de interesse.
+3. **Sincronização programada**:
+   - Atualiza o catálogo às **06:00 e às 18:00 (America/Sao_Paulo)**, com limites de requisições por domínio e proteção contra desativação em massa.
+   - Nenhuma coleta é disparada ao iniciar o servidor. Horários perdidos enquanto ele está desligado não são recuperados.
+   - A sincronização manual fica disponível apenas para operadores, pela CLI.
 4. **Inteligência Financeira & Curadoria Pessoal**:
    - Cálculo automático de **Custo Mensal Estimado** (`Aluguel + Condomínio + IPTU + Seguro`) e **R$/m²**.
    - **Histórico de preços** (`price_history`) e filtro direto de **quedas de preço** (`only_price_drops=true`).
    - **Detecção e agrupamento de duplicados** entre imobiliárias diferentes (`deduplicate=true` mostra o menor valor anunciado e lista os concorrentes lado a lado).
-   - **Favoritos (`★`), Descartados (`✕`) e Anotações Pessoais**, preservados entre sincronizações.
+   - **Favoritos, descartados e anotações** ficam neste navegador. O IMOB limita seu armazenamento a 256 KiB, não apaga itens para abrir espaço e avisa se não conseguir salvar. Os filtros de favoritos e descartados enviam apenas identificadores de anúncios à busca; as anotações nunca são enviadas.
 
 ---
 
@@ -67,58 +68,55 @@ cartões Widesys impedem a entrada desses cartões como imóveis disponíveis se
 interromper a paginação. As proteções existentes contra desativação em massa continuam
 aplicadas; isso não substitui a validação do catálogo completo.
 
-Reinicie o servidor para carregar as novas configurações. Os arquivos do projeto e o
-pacote portátil do Windows (`dist/ImobPatoBranco-Windows-x64.zip`) foram atualizados.
+### Subir com Docker Compose
 
-Todos os comandos devem ser executados dentro da pasta `imob/`:
+Use Docker Engine com Docker Compose **v2.24 ou mais recente**. No servidor compartilhado, use um checkout separado dos projetos GoGon e cookbook. Antes de subir, confira que `docker compose ls` não mostra outro projeto `imob` e que `ss -ltn 'sport = :8090'` não mostra a porta em uso. Altere `IMOB_PORT` se necessário.
 
-```bash
-cd /home/htxzz77/Projects/general_topics/imob
-```
-
-### 1. Subir a API REST + Painel Web Local
+Em uma instalação nova, na raiz do checkout (não sobrescreva um `.env` existente):
 
 ```bash
-uv run imob serve
+(umask 077; set -o noclobber; sed '/^IMOB_MYSQL_PASSWORD=/d' imob-env.example > .env &&
+  printf 'IMOB_MYSQL_PASSWORD=%s\n' "$(openssl rand -hex 24)" >> .env)
+chmod 600 .env
+docker compose config --quiet
+docker compose up -d --build --wait
+docker compose ps
+curl -fsS http://127.0.0.1:8090/api/health
 ```
 
-- **Painel Web com Filtros**: <http://127.0.0.1:8000/>
-- **Documentação Interativa OpenAPI (Swagger)**: <http://127.0.0.1:8000/docs>
-
-Opções úteis:
-```bash
-uv run imob serve --port 8080          # Escolher outra porta
-uv run imob serve --no-timer           # Desativar o timer automático em background
-```
-
-### 2. Sincronizar via Linha de Comando (Opcional)
+O painel fica em <http://127.0.0.1:8090/> no host. O MySQL não publica porta. O catálogo começa vazio; aguarde o próximo horário ou execute uma primeira coleta em um horário aprovado:
 
 ```bash
-# Atualiza apenas imobiliárias cujo cache TTL (padrão 6h) expirou
-uv run imob sync
-
-# Força atualização imediata das fontes cadastradas
-uv run imob sync --force
-
-# Sincroniza apenas imobiliárias específicas pelo slug
-uv run imob sync --agency apolar --agency uniq --force
+docker compose run --rm imob-ops imob sync --force
+docker compose run --rm imob-ops imob stats
 ```
 
-### 3. Ver Estatísticas do Banco Local
+Para testar uma única fonte, adicione `--agency apolar` ao sync. Para executar apenas fontes cujo TTL expirou (6 horas por padrão), omita `--force`. Consulte `docker compose logs --tail 100 imob mysql` e `/api/sync/status` para acompanhar o serviço. O status da coleta por fonte também aparece no painel.
 
-```bash
-uv run imob stats
+Para atualizar, use `docker compose up -d --build --wait` com o checkout atualizado. `docker compose down` para a aplicação, mas preserva os volumes `imob_imob-mysql` e `imob_imob-maps`. Não há backup automático. Não use `down -v` em manutenção: ele apaga o catálogo, seu histórico e os mapas importados. As credenciais iniciais do MySQL são aplicadas apenas a um volume novo; mudar `.env` sozinho não altera a conta existente.
+
+### Exposição pública no IP compartilhado — requer aprovação
+
+O Compose do IMOB não abre as portas 80 e 443. O Caddy do cookbook já as publica e executa dentro de um contêiner: `127.0.0.1:8090` **dentro dele** não aponta para o host. Para publicar sem abrir uma porta pública adicional, crie uma rede Docker dedicada (`docker network create --internal imob_proxy`). Declare-a como rede externa nos dois arquivos Compose (`imob_proxy: {external: true}` em `networks`) e adicione-a somente aos serviços `imob` e `caddy`, mantendo as redes que eles já usam. Não conecte o proxy à rede privada do MySQL. Assim as conexões sobrevivem à recriação dos contêineres.
+
+No IP HTTPS existente, reserve `/imob/`. No snippet `cookbook_app` de `web/caddy/site.caddy`, acrescente o redirecionamento e o bloco do IMOB abaixo. Coloque o `encode`, o `import security_headers` e os três blocos `handle` atuais do cookbook dentro de um `handle` de fallback; mantenha `handle_errors` no nível do snippet. Isso preserva a política do IMOB nessa rota, inclusive para fotos de imobiliárias e PDFs.
+
+```caddyfile
+redir /imob /imob/?{query} 308
+handle_path /imob/* {
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+    reverse_proxy imob:8000
+}
 ```
 
-### 4. Gerar Versão Portátil para Windows (`.zip` + `.exe`)
+Se houver um hostname dedicado, prefira-o para isolar o armazenamento do navegador por origem. No mesmo IP e origem, as chaves dos dois apps são distintas, mas os scripts compartilham o acesso à área de `localStorage`; o caminho `/imob/` não é uma barreira de segurança.
 
-Para empacotar o aplicativo como uma pasta portátil para Windows 10/11 (`dist/ImobPatoBranco-Windows-x64.zip`, já contendo `ImobPatoBranco.exe` e o banco inicial populado sem favoritos/anotações pessoais):
+Antes de aplicar, confirme a URL pública e a janela de mudança. Valide a configuração do Caddy e guarde a versão anterior para reversão. Como o cookbook inclui o snippet na imagem, a mudança exige reconstruir o serviço Caddy. Depois, confira HTTPS, painel, API, CSS/JS e PDFs do IMOB, além das rotas existentes do cookbook. Nenhuma alteração no Caddy, no certificado ou no DNS é feita pelo Compose do IMOB.
 
-```bash
-uv run python packaging/windows/build_windows_portable.py
-```
-
-Quem receber o `.zip` só precisa extrair a pasta `ImobPatoBranco` e dar **duplo clique** em `ImobPatoBranco.exe` (o servidor local inicia automaticamente e abre o painel no navegador padrão).
+O pacote portátil do Windows com SQLite foi descontinuado na versão 0.2.0.
 
 ---
 
@@ -127,20 +125,18 @@ Quem receber o `.zip` só precisa extrair a pasta `ImobPatoBranco` e dar **duplo
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/api/health` | Status do serviço |
-| `GET` | `/api/stats` | Totais ativos, aluguel, venda, quedas de preço, duplicados e favoritos |
+| `GET` | `/api/stats` | Totais de anúncios ativos, aluguel, venda, quedas de preço e duplicados |
 | `GET` | `/api/facets` | Contadores dinâmicos de tipos, bairros e imobiliárias (`?purpose=aluguel\|venda`) |
 | `GET` | `/api/agencies` | Lista fontes cadastradas, coletores e status do último sync |
-| `GET` | `/api/properties` | Busca paginada com todos os filtros combináveis + busca textual FTS5 |
+| `GET` | `/api/properties` | Busca paginada, incluindo busca textual MySQL FULLTEXT |
 | `GET` | `/api/properties/{id}` | Ficha completa, histórico de preços e anúncios equivalentes em outras imobiliárias |
-| `POST` | `/api/properties/{id}/enrich` | Raspa sob demanda a página individual do imóvel (descrição completa, taxas e fotos) |
-| `PATCH` | `/api/properties/{id}/state` | Salva `is_favorite`, `is_hidden` (descartado) e `user_notes` |
-| `GET` | `/api/sync/status` | Progresso em tempo real da sincronização e configuração do timer |
-| `POST` | `/api/sync` | Dispara sincronização em background (`{"agencies": [], "force": false}`) |
+| `POST` | `/api/properties/search` | Busca somente de leitura, com filtros no corpo e listas opcionais `include_keys` e `exclude_keys` |
+| `GET` | `/api/sync/status` | Progresso e próximo horário da sincronização automática |
 
 ### Exemplo de Consulta via API (`curl`)
 
 ```bash
-curl "http://127.0.0.1:8000/api/properties?purpose=aluguel&types=apartamento,sobrado&neighborhoods=centro,fraron&max_monthly_total=3200&min_bedrooms=2&only_with_price=true&deduplicate=true&sort=menor_custo_mensal"
+curl "http://127.0.0.1:8090/api/properties?purpose=aluguel&types=apartamento,sobrado&neighborhoods=centro,fraron&max_monthly_total=3200&min_bedrooms=2&only_with_price=true&deduplicate=true&sort=menor_custo_mensal"
 ```
 
 ---
@@ -149,10 +145,15 @@ curl "http://127.0.0.1:8000/api/properties?purpose=aluguel&types=apartamento,sob
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `IMOB_DB_PATH` | `data/imob.db` | Caminho do banco SQLite |
-| `IMOB_AUTO_SYNC_ENABLED` | `true` | Ativa/desativa o timer periódico em background no `imob serve` |
-| `IMOB_SYNC_INTERVAL_HOURS` | `6.0` | TTL (horas) mínimo antes de ressincronizar automaticamente uma imobiliária |
-| `IMOB_TIMER_CHECK_MINUTES` | `15.0` | Intervalo de verificação do timer em background (minutos) |
+| `IMOB_MYSQL_HOST` | `mysql` no Docker | Host do MySQL (`127.0.0.1` fora do Docker) |
+| `IMOB_MYSQL_PORT` | `3306` | Porta do MySQL |
+| `IMOB_MYSQL_USER`, `IMOB_MYSQL_DATABASE` | `imob` no Docker | Conta e banco do IMOB |
+| `IMOB_MYSQL_PASSWORD` | obrigatório | Senha exclusiva da conta MySQL |
+| `IMOB_PORT` | `8090` no Docker | Porta HTTP publicada apenas no loopback |
+| `IMOB_AUTO_SYNC_ENABLED` | `true` | Ativa o agendamento automático |
+| `IMOB_SYNC_TIMES` | `06:00,18:00` | Horários locais da sincronização automática |
+| `IMOB_SYNC_TIMEZONE` | `America/Sao_Paulo` | Fuso horário IANA do agendamento |
+| `IMOB_SYNC_INTERVAL_HOURS` | `6.0` | TTL da sincronização manual sem `--force` |
 | `IMOB_PER_DOMAIN_DELAY_SECONDS` | `0.45` | Atraso mínimo entre requisições para o mesmo domínio |
 | `IMOB_MAX_CONCURRENT_AGENCIES` | `6` | Máximo de imobiliárias sincronizadas simultaneamente |
 
@@ -163,11 +164,18 @@ curl "http://127.0.0.1:8000/api/properties?purpose=aluguel&types=apartamento,sob
 ```bash
 uv run ruff check src tests
 uv run ruff format --check src tests
-uv run mypy src tests
-uv run pytest -v
+uv run python -m mypy src tests
+uv run python -m pytest -v
+node --test tests/web/
+
+# Testes de integração: MySQL descartável em loopback, nunca o banco de produção.
+docker compose -f compose.test.yaml up -d --wait
+IMOB_TEST_MYSQL_URL=mysql+pymysql://root:imob-test-only@127.0.0.1:33306 \
+  IMOB_REQUIRE_MYSQL=1 uv run python -m pytest -v
+docker compose -f compose.test.yaml down
 
 # Opcional: verifica as 17 inclusões nos sites reais e salva diagnósticos em /tmp/imob-live-catalogs/
-uv run pytest -q tests/live_catalogs.py
+uv run python -m pytest -q tests/live_catalogs.py
 ```
 
 ## Similaridade, negociação e cobertura
@@ -225,10 +233,9 @@ O preço **não participa** da identificação. Alterações, diferenças ou aus
 valor não aproximam nem separam anúncios. Números monetários também são excluídos
 da comparação de termos. A comparação visual das fotos ainda não está implementada.
 
-A migração `0003` cria a tabela derivada `property_matches`; grupos e pares são
-recalculados com os dados locais na inicialização, após cada catálogo e após
-qualquer enriquecimento. Uma nova coleta não é necessária para rever os dados já
-armazenados. O parser Imonov também reconhece mais atributos com rótulos e ícones
+A tabela derivada `property_matches` guarda os grupos e pares, recalculados a partir
+ dos dados do MySQL na inicialização e após a atualização de cada catálogo. Uma nova
+coleta não é necessária para rever dados já armazenados. O parser Imonov reconhece mais atributos com rótulos e ícones
 e corrige a leitura de áreas com `m²`; esses dados adicionais entram no próximo sync.
 O catálogo pode estar incompleto: baixa cobertura de características não comprova
 ausência de duplicados, mesmo quando o sincronizador retorna sucesso.
@@ -236,14 +243,13 @@ ausência de duplicados, mesmo quando o sincronizador retorna sucesso.
 As tags **Aceita permuta** e **Estuda proposta** aparecem nos cartões e detalhes
 quando indicadas nos dados estruturados suportados ou na descrição coletada.
 Ausência da tag não significa recusa. A leitura de texto considera negações;
-novos termos ficam disponíveis na próxima sincronização ou no enriquecimento.
+novos termos ficam disponíveis na próxima sincronização.
 Clique numa miniatura da galeria para ampliar, navegar pelas setas e fechar com Esc.
 
 Anúncios sem preço são incluídos por padrão, inclusive ao limpar filtros.
-`only_with_price=true` restringe a busca quando desejado. As opções de incluir
-anúncios descartados (`include_hidden=true`) e inativos (`include_inactive=true`)
-permitem consultar o histórico local. Limites de preço/área ainda podem excluir
-anúncios que não informam esses valores.
+`only_with_price=true` restringe a busca quando desejado. A opção de incluir descartados
+usa o estado deste navegador; `include_inactive=true` inclui anúncios inativos.
+Limites de preço/área ainda podem excluir anúncios que não informam esses valores.
 
 O banco contém apenas o que foi coletado dos catálogos públicos e aceito pelo filtro
 de cidade. Imóveis identificados como fora de Pato Branco são descartados antes da
@@ -255,15 +261,16 @@ CRM de cada imobiliária. A coleta atual não acessa esse estoque privado.
 ## Biblioteca de mapas e quadras
 
 O botão **Mapas e quadras** organiza os links municipais em cinco faixas de 1 a
-2500. Consulte uma quadra para abrir a pasta oficial correspondente e adicionar seu
-PDF. Os mapas adicionados ficam em `data/maps/quadras/0928.pdf`, por exemplo, e
-podem ser visualizados dentro do painel. Cada arquivo tem limite de 20 MB.
+2500. Consulte uma quadra para abrir a pasta oficial ou ver seu PDF quando já
+importado. Cada arquivo tem limite de 20 MiB.
 Os links das pastas não significam que todos os PDFs já foram baixados.
 
-Para importar uma pasta de mapas públicos baixados do acervo municipal:
+Para importar mapas públicos baixados do acervo municipal, crie `maps-import/` na raiz
+do checkout e copie os PDFs para lá. A pasta e os arquivos devem ser legíveis pelo
+UID 10001 no contêiner. Só o serviço de importação monta essa pasta, em modo de leitura:
 
 ```bash
-uv run imob maps-import /caminho/para/pasta-de-mapas
+docker compose run --rm imob-maps-import
 ```
 
 O importador reconhece arquivos como `0928.pdf` ou `Quadra_0928.pdf`, inclusive em
@@ -271,8 +278,8 @@ subpastas. Nomes ambíguos são informados como não importados; duas entradas p
 mesma quadra interrompem a importação antes de gravar. Os arquivos são armazenados
 por quadra, sem criar base de proprietários ou consultar cadastros de IPTU.
 
-Endpoints: `GET /api/maps?quadra=928`, `GET /api/maps/quadras/928/pdf` e
-`PUT /api/maps/quadras/928/pdf` (corpo `application/pdf`). Não há consulta automática
+Endpoints: `GET /api/maps?quadra=928` e `GET /api/maps/quadras/928/pdf`. Não há upload
+pela API nem consulta automática
 por proprietário, CPF, débitos ou enumeração de cadastros municipais. Quadra, lote,
 cadastro imobiliário e matrícula são identificadores diferentes; nenhuma fórmula
 entre eles foi confirmada. No formulário municipal observado em novembro de 2026,

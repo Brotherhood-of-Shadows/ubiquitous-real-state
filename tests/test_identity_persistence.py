@@ -1,22 +1,19 @@
 """Synchronous persistence checks for identity safety and negotiation enrichment."""
 
-from pathlib import Path
-
 from sqlalchemy import text
 
-from imob.db.engine import create_session_factory, create_sqlite_engine, run_migrations
+from imob.db.engine import create_session_factory
 from imob.db.repository import SqlAlchemyPropertyRepository
 from imob.domain.enums import SyncStatus
 from imob.domain.models import PropertyDetailPatch, PropertyFilterParams, RawScrapedItem
 from imob.domain.normalizer import normalize_scraped_item
 from imob.domain.registry import AGENCIES_BY_SLUG
+from tests.conftest import MySqlTestDatabase
 
 
-def test_address_identity_and_negotiation_survive_persistence(tmp_path: Path) -> None:
+def test_address_identity_and_negotiation_survive_persistence(mysql_db: MySqlTestDatabase) -> None:
     """Check peers, separation, detail patch, and absence of a default price restriction."""
-    path = tmp_path / "identity.db"
-    run_migrations(path)
-    engine = create_sqlite_engine(path)
+    engine = mysql_db.engine
     repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
     agency = AGENCIES_BY_SLUG["imobilli"]
     repo.seed_agencies((agency,))
@@ -62,15 +59,12 @@ def test_address_identity_and_negotiation_survive_persistence(tmp_path: Path) ->
     assert not patched.accepts_exchange
     assert patched.accepts_proposals
     with engine.connect() as conn:
-        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0003_similarity_pairs"
-    engine.dispose()
+        assert conn.scalar(text("SELECT version_num FROM alembic_version")) == "0001_mysql_baseline"
 
 
-def test_existing_groups_rebuild_on_startup_and_after_catalog_change(tmp_path: Path) -> None:
+def test_existing_groups_rebuild_on_startup_and_after_catalog_change(mysql_db: MySqlTestDatabase) -> None:
     """Rebuild a populated database without scraping and remove stale groups after updates."""
-    path = tmp_path / "refresh.db"
-    run_migrations(path)
-    engine = create_sqlite_engine(path)
+    engine = mysql_db.engine
     repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
     agencies = (AGENCIES_BY_SLUG["imobilli"], AGENCIES_BY_SLUG["famex"])
     repo.seed_agencies(agencies)
@@ -134,14 +128,11 @@ def test_existing_groups_rebuild_on_startup_and_after_catalog_change(tmp_path: P
     )
     assert repo.get_stats().duplicate_groups_count == 0
     assert repo.search_properties(PropertyFilterParams(deduplicate=True)).total == 2
-    engine.dispose()
 
 
-def test_review_pairs_are_queryable_but_never_collapse_results(tmp_path: Path) -> None:
+def test_review_pairs_are_queryable_but_never_collapse_results(mysql_db: MySqlTestDatabase) -> None:
     """Store review evidence, expose its filter/details, and drop stale inactive pairs."""
-    path = tmp_path / "review.db"
-    run_migrations(path)
-    engine = create_sqlite_engine(path)
+    engine = mysql_db.engine
     repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
     agencies = (AGENCIES_BY_SLUG["imobilli"], AGENCIES_BY_SLUG["famex"])
     repo.seed_agencies(agencies)
@@ -190,4 +181,3 @@ def test_review_pairs_are_queryable_but_never_collapse_results(tmp_path: Path) -
     assert repo.get_stats().similarity_review_pairs_count == 0
     assert repo.get_property_detail(detail.id).similarity_candidates == ()
     assert repo.search_properties(PropertyFilterParams(only_similarity_candidates=True)).total == 0
-    engine.dispose()

@@ -1,23 +1,16 @@
-"""Integration tests for SQLite persistence, Alembic + FTS5, SyncService, and FastAPI routes."""
+"""Integration tests for MySQL persistence, Alembic + FULLTEXT, SyncService, and FastAPI routes."""
 
 from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx
 import pytest
 
 from imob.api.app import create_app
-from imob.config import AppSettings
-from imob.db.engine import (
-    create_session_factory,
-    create_sqlite_engine,
-    ensure_fts5_objects,
-    run_migrations,
-)
+from imob.db.engine import create_session_factory
 from imob.db.repository import SqlAlchemyPropertyRepository
 from imob.domain.enums import FurnishedStatus, PlatformKind, SyncStatus
 from imob.domain.models import (
@@ -29,6 +22,7 @@ from imob.domain.models import (
 )
 from imob.ports import ScrapeBatchResult, UpsertBatchOutcome
 from imob.services.sync_service import SyncService
+from tests.conftest import MySqlTestDatabase
 
 
 class FakePlatformScraper:
@@ -76,18 +70,12 @@ class FakeScraperRegistry:
 
 
 @pytest.mark.asyncio
-async def test_sync_lifecycle_price_history_circuit_breaker_dedup_fts_and_api(tmp_path: Path) -> None:
-    """Verify full lifecycle across migrations, sync updates, price drops, dedup, FTS5, and HTTP API."""
-    db_file = tmp_path / "imob_test.db"
-    settings = AppSettings(
-        db_path=db_file,
-        auto_sync_enabled=False,
-        sync_interval_hours=6.0,
-    )
-
-    run_migrations(db_file)
-    engine = create_sqlite_engine(db_file)
-    ensure_fts5_objects(engine)
+async def test_sync_lifecycle_price_history_circuit_breaker_dedup_fts_and_api(
+    mysql_db: MySqlTestDatabase,
+) -> None:
+    """Verify full lifecycle across migrations, sync updates, price drops, dedup, FULLTEXT, and HTTP API."""
+    settings = mysql_db.settings.model_copy(update={"sync_interval_hours": 6.0})
+    engine = mysql_db.engine
     session_factory = create_session_factory(engine)
     repo = SqlAlchemyPropertyRepository(session_factory)
 
@@ -191,79 +179,79 @@ async def test_sync_lifecycle_price_history_circuit_breaker_dedup_fts_and_api(tm
         len(detail_101.duplicate_peers),
     ) == (2250.0, 2500.0, -10.0, 2, 1)
 
-    engine.dispose()
-
-    # 4. Test FastAPI endpoints + FTS5 + deduplication + lazy enrichment via ASGI client
+    # 4. Test FastAPI endpoints + FULLTEXT + deduplication via ASGI client
     app = create_app(settings)
-    test_engine = create_sqlite_engine(db_file)
-    try:
-        async with app.router.lifespan_context(app):
-            app.state.sync_service = SyncService(
-                SqlAlchemyPropertyRepository(create_session_factory(test_engine)),
-                FakeScraperRegistry(fake_scraper),
-                settings,
-            )
+    async with app.router.lifespan_context(app):
+        app.state.sync_service = SyncService(
+            SqlAlchemyPropertyRepository(create_session_factory(engine)),
+            FakeScraperRegistry(fake_scraper),
+            settings,
+        )
 
-            transport = httpx.ASGITransport(app=app)
-            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-                health_res = await client.get("/api/health")
-                assert health_res.status_code == 200
-                assert health_res.json() == {"status": "ok", "city": "Pato Branco - PR"}
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            health_res = await client.get("/api/health")
+            assert health_res.status_code == 200
+            assert health_res.json() == {"status": "ok", "city": "Pato Branco - PR"}
 
-                dash_res = await client.get("/")
-                assert dash_res.status_code == 200
-                assert "Imob Pato Branco" in dash_res.text
+            dash_res = await client.get("/")
+            assert dash_res.status_code == 200
+            assert "Imob Pato Branco" in dash_res.text
 
-                stats_res = await client.get("/api/stats")
-                stats_json = stats_res.json()
-                assert (
-                    stats_json["active_properties"],
-                    stats_json["inactive_properties"],
-                    stats_json["price_drops_count"],
-                    stats_json["duplicate_groups_count"],
-                ) == (2, 1, 1, 1)
-                assert "favorites_count" not in stats_json
-                assert "hidden_count" not in stats_json
+            stats_res = await client.get("/api/stats")
+            stats_json = stats_res.json()
+            assert (
+                stats_json["active_properties"],
+                stats_json["inactive_properties"],
+                stats_json["price_drops_count"],
+                stats_json["duplicate_groups_count"],
+            ) == (2, 1, 1, 1)
+            assert "favorites_count" not in stats_json
+            assert "hidden_count" not in stats_json
 
-                # Deduplicated search collapses AR101 (R$ 2250) and ED909 (R$ 2200) to ED909 (lowest price!)
-                dedup_res = await client.get("/api/properties", params={"deduplicate": "true"})
-                dedup_json = dedup_res.json()
-                assert dedup_json["total"] == 1
-                assert dedup_json["items"][0]["ref_code"] == "ED909"
-                assert dedup_json["items"][0]["duplicate_count"] == 2
+            # Deduplicated search collapses AR101 (R$ 2250) and ED909 (R$ 2200) to ED909 (lowest price!)
+            dedup_res = await client.get("/api/properties", params={"deduplicate": "true"})
+            dedup_json = dedup_res.json()
+            assert dedup_json["total"] == 1
+            assert dedup_json["items"][0]["ref_code"] == "ED909"
+            assert dedup_json["items"][0]["duplicate_count"] == 2
 
-                # FTS5 query matches "Solar Iguaçu"
-                fts_res = await client.get("/api/properties", params={"q": "Solar Iguaçu"})
-                fts_json = fts_res.json()
-                assert fts_json["total"] == 1
-                assert fts_json["items"][0]["ref_code"] == "AR101"
+            # FULLTEXT query matches "Solar Iguaçu"
+            fts_res = await client.get("/api/properties", params={"q": "Solar Iguaçu"})
+            fts_json = fts_res.json()
+            assert fts_json["total"] == 1
+            assert fts_json["items"][0]["ref_code"] == "AR101"
 
-                # Anonymous mutation and scrape triggers no longer exist.
-                for method, url in (
-                    ("POST", "/api/sync"),
-                    ("POST", f"/api/properties/{arcari_101.id}/enrich"),
-                    ("PATCH", f"/api/properties/{arcari_101.id}/state"),
-                    ("PUT", "/api/maps/quadras/1/pdf"),
-                ):
-                    gone = await client.request(method, url, json={"is_favorite": True})
-                    assert gone.status_code in (404, 405), (method, url, gone.status_code)
+            # Anonymous mutation and scrape triggers no longer exist.
+            for method, url in (
+                ("POST", "/api/sync"),
+                ("POST", f"/api/properties/{arcari_101.id}/enrich"),
+                ("PATCH", f"/api/properties/{arcari_101.id}/state"),
+                ("PUT", "/api/maps/quadras/1/pdf"),
+            ):
+                gone = await client.request(method, url, json={"is_favorite": True})
+                assert gone.status_code in (404, 405), (method, url, gone.status_code)
 
-                # Detail is the stored catalog snapshot: reading it never scrapes the agency page.
-                detail_res = await client.get(f"/api/properties/{arcari_101.id}")
-                assert detail_res.status_code == 200
-                detail_json = detail_res.json()
-                assert detail_json["condo_fee"] is None
-                assert detail_json["detail_enriched_at"] is None
-                assert not {"is_favorite", "is_hidden", "user_notes"} & set(detail_json)
-                assert fake_scraper.detail_calls == 0
+            # Detail is the stored catalog snapshot: reading it never scrapes the agency page.
+            detail_res = await client.get(f"/api/properties/{arcari_101.id}")
+            assert detail_res.status_code == 200
+            detail_json = detail_res.json()
+            assert detail_json["condo_fee"] is None
+            assert detail_json["detail_enriched_at"] is None
+            assert not {"is_favorite", "is_hidden", "user_notes"} & set(detail_json)
+            assert fake_scraper.detail_calls == 0
 
-                status_res = await client.get("/api/sync/status")
-                assert status_res.status_code == 200
-                assert status_res.json()["is_running"] is False
+            status_res = await client.get("/api/sync/status")
+            assert status_res.status_code == 200
+            status_json = status_res.json()
+            assert status_json["is_running"] is False
+            assert status_json["sync_schedule"] == ["06:00", "18:00"]
+            assert status_json["sync_timezone"] == "America/Sao_Paulo"
+            assert "next_scheduled_run_at" in status_json
+            assert "sync_interval_hours" not in status_json
+            assert "next_timer_check_at" not in status_json
 
-                await _assert_key_search(client)
-    finally:
-        test_engine.dispose()
+            await _assert_key_search(client)
 
 
 async def _assert_key_search(client: httpx.AsyncClient) -> None:
@@ -315,122 +303,111 @@ async def _assert_key_search(client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_concurrent_scrapes_serialize_catalog_writes(tmp_path: Path) -> None:
-    """Keep network scraping concurrent while SQLite catalog writes run one at a time."""
-    db_file = tmp_path / "concurrent_sync.db"
-    run_migrations(db_file)
-    engine = create_sqlite_engine(db_file)
-    try:
-        ensure_fts5_objects(engine)
-        repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
-        scraper = FakePlatformScraper(
-            {
-                slug: [
-                    RawScrapedItem(
-                        agency_slug=slug,
-                        external_id="1",
-                        source_url=f"https://example.com/{slug}/1",
-                        raw_purpose="aluguel",
-                        raw_type="Casa",
-                        title=f"Casa no Centro {slug}",
-                        raw_city="Pato Branco",
-                        raw_neighborhood="Centro",
-                        rent_price=2000.0,
-                    )
-                ]
-                for slug in ("arcari", "ederson")
-            }
-        )
-        sync = SyncService(
-            repo,
-            FakeScraperRegistry(scraper),
-            AppSettings(db_path=db_file, auto_sync_enabled=False, max_concurrent_agencies=2),
-        )
-        original_write = repo.apply_agency_catalog
-        guard = threading.Lock()
-        active_writes = 0
-        peak_writes = 0
-
-        def tracked_write(
-            agency: AgencyConfig,
-            listings: tuple[NormalizedListing, ...],
-            *,
-            allow_deactivation: bool,
-            sync_status: SyncStatus,
-            requests_made: int,
-            duration_seconds: float,
-            error_message: str | None = None,
-        ) -> UpsertBatchOutcome:
-            nonlocal active_writes, peak_writes
-            with guard:
-                active_writes += 1
-                peak_writes = max(peak_writes, active_writes)
-            try:
-                time.sleep(0.05)  # Give another finished scraper time to enter persistence.
-                return original_write(
-                    agency,
-                    listings,
-                    allow_deactivation=allow_deactivation,
-                    sync_status=sync_status,
-                    requests_made=requests_made,
-                    duration_seconds=duration_seconds,
-                    error_message=error_message,
+async def test_concurrent_scrapes_serialize_catalog_writes(mysql_db: MySqlTestDatabase) -> None:
+    """Keep network scraping concurrent while catalog writes (global match rebuild) run one at a time."""
+    engine = mysql_db.engine
+    repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
+    scraper = FakePlatformScraper(
+        {
+            slug: [
+                RawScrapedItem(
+                    agency_slug=slug,
+                    external_id="1",
+                    source_url=f"https://example.com/{slug}/1",
+                    raw_purpose="aluguel",
+                    raw_type="Casa",
+                    title=f"Casa no Centro {slug}",
+                    raw_city="Pato Branco",
+                    raw_neighborhood="Centro",
+                    rent_price=2000.0,
                 )
-            finally:
-                with guard:
-                    active_writes -= 1
+            ]
+            for slug in ("arcari", "ederson")
+        }
+    )
+    sync = SyncService(
+        repo,
+        FakeScraperRegistry(scraper),
+        mysql_db.settings.model_copy(update={"max_concurrent_agencies": 2}),
+    )
+    original_write = repo.apply_agency_catalog
+    guard = threading.Lock()
+    active_writes = 0
+    peak_writes = 0
 
-        with patch.object(repo, "apply_agency_catalog", side_effect=tracked_write):
-            actual = await sync.sync_agencies(agency_slugs=("arcari", "ederson"), force=True)
+    def tracked_write(
+        agency: AgencyConfig,
+        listings: tuple[NormalizedListing, ...],
+        *,
+        allow_deactivation: bool,
+        sync_status: SyncStatus,
+        requests_made: int,
+        duration_seconds: float,
+        error_message: str | None = None,
+    ) -> UpsertBatchOutcome:
+        nonlocal active_writes, peak_writes
+        with guard:
+            active_writes += 1
+            peak_writes = max(peak_writes, active_writes)
+        try:
+            time.sleep(0.05)  # Give another finished scraper time to enter persistence.
+            return original_write(
+                agency,
+                listings,
+                allow_deactivation=allow_deactivation,
+                sync_status=sync_status,
+                requests_made=requests_made,
+                duration_seconds=duration_seconds,
+                error_message=error_message,
+            )
+        finally:
+            with guard:
+                active_writes -= 1
 
-        assert actual.total_inserted == 2
-        assert peak_writes == 1
-        assert repo.get_stats().active_properties == 2
-    finally:
-        engine.dispose()
+    with patch.object(repo, "apply_agency_catalog", side_effect=tracked_write):
+        actual = await sync.sync_agencies(agency_slugs=("arcari", "ederson"), force=True)
+
+    assert actual.total_inserted == 2
+    assert peak_writes == 1
+    assert repo.get_stats().active_properties == 2
 
 
 @pytest.mark.asyncio
-async def test_circuit_breaker_prevents_mass_deactivation_on_truncated_catalog(tmp_path: Path) -> None:
+async def test_circuit_breaker_prevents_mass_deactivation_on_truncated_catalog(
+    mysql_db: MySqlTestDatabase,
+) -> None:
     """Verify an anomalous >50% catalog drop on a 12-item agency does not wipe active listings."""
-    db_file = tmp_path / "cb_test.db"
-    settings = AppSettings(db_path=db_file, auto_sync_enabled=False)
+    settings = mysql_db.settings
+    engine = mysql_db.engine
+    repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
 
-    run_migrations(db_file)
-    engine = create_sqlite_engine(db_file)
-    try:
-        ensure_fts5_objects(engine)
-        repo = SqlAlchemyPropertyRepository(create_session_factory(engine))
+    twelve_items = [
+        RawScrapedItem(
+            agency_slug="solar",
+            external_id=str(i),
+            ref_code=f"SL{i}",
+            source_url=f"https://solar.imb.br/{i}-casa-centro",
+            raw_purpose="aluguel",
+            raw_type="Casa",
+            title=f"Casa {i} no Centro",
+            raw_city="Pato Branco",
+            raw_neighborhood="Centro",
+            rent_price=2000.0 + i * 50,
+            area_built_m2=100.0,
+            bedrooms=2,
+        )
+        for i in range(1, 13)
+    ]
+    fake = FakePlatformScraper({"solar": twelve_items})
+    sync = SyncService(repo, FakeScraperRegistry(fake), settings)
 
-        twelve_items = [
-            RawScrapedItem(
-                agency_slug="solar",
-                external_id=str(i),
-                ref_code=f"SL{i}",
-                source_url=f"https://solar.imb.br/{i}-casa-centro",
-                raw_purpose="aluguel",
-                raw_type="Casa",
-                title=f"Casa {i} no Centro",
-                raw_city="Pato Branco",
-                raw_neighborhood="Centro",
-                rent_price=2000.0 + i * 50,
-                area_built_m2=100.0,
-                bedrooms=2,
-            )
-            for i in range(1, 13)
-        ]
-        fake = FakePlatformScraper({"solar": twelve_items})
-        sync = SyncService(repo, FakeScraperRegistry(fake), settings)
+    first = await sync.sync_agencies(agency_slugs=("solar",), force=True)
+    assert first.total_inserted == 12
 
-        first = await sync.sync_agencies(agency_slugs=("solar",), force=True)
-        assert first.total_inserted == 12
+    # Simulate transient agency glitch returning only 2 of the 12 listings (<50% of 12)
+    fake.batches["solar"] = twelve_items[:2]
+    second = await sync.sync_agencies(agency_slugs=("solar",), force=True)
 
-        # Simulate transient agency glitch returning only 2 of the 12 listings (<50% of 12)
-        fake.batches["solar"] = twelve_items[:2]
-        second = await sync.sync_agencies(agency_slugs=("solar",), force=True)
-
-        actual = (second.total_deactivated, repo.get_stats().active_properties)
-        expected = (0, 12)
-        assert actual == expected
-    finally:
-        engine.dispose()
+    actual = (second.total_deactivated, repo.get_stats().active_properties)
+    expected = (0, 12)
+    assert actual == expected

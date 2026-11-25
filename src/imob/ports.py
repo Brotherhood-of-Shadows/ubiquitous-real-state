@@ -86,14 +86,31 @@ class ScraperRegistryProtocol(Protocol):
         ...
 
 
+class SyncLockLease(Protocol):
+    """A held cross-process synchronization lock."""
+
+    def release(self) -> None:
+        """Release the lock; safe to call more than once."""
+        ...
+
+
 class PropertyRepositoryProtocol(Protocol):
     """Persistence boundary for agencies, properties, price history, and sync logs."""
 
-    def seed_agencies(self, agencies: tuple[AgencyConfig, ...]) -> None:
-        """Ensure all registered agencies exist in the database.
+    def try_acquire_sync_lock(self) -> SyncLockLease | None:
+        """Take the cross-process sync lock without waiting.
+
+        Returns:
+            The held lease, or `None` when another process (CLI or scheduler) is already syncing.
+        """
+        ...
+
+    def seed_agencies(self, agencies: tuple[AgencyConfig, ...], *, sync_lock_held: bool = False) -> None:
+        """Ensure all registered agencies exist in the database and similarity groups are up to date.
 
         Args:
             agencies: Registered agency definitions.
+            sync_lock_held: Whether the caller already holds the database-scoped sync lock.
         """
         ...
 

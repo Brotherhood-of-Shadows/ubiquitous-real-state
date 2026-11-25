@@ -1,0 +1,7 @@
+# Copy to .env before deploying and set a unique password.
+IMOB_PORT=8090
+IMOB_MYSQL_USER=imob
+IMOB_MYSQL_PASSWORD=
+IMOB_MYSQL_DATABASE=imob
+IMOB_SYNC_TIMES=06:00,18:00
+IMOB_SYNC_TIMEZONE=America/Sao_Paulo
