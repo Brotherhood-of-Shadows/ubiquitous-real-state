@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Imob Pato Branco — Busca Unificada de Imóveis</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-logo" aria-hidden="true">PB</div>
+        <div>
+          <h1>Imob Pato Branco</h1>
+          <p class="subtitle">Imobiliárias de Pato Branco &bull; Filtro real, R$/m², custo mensal e histórico</p>
+        </div>
+      </div>
+
+      <div class="topbar-stats" id="stats-bar" aria-live="polite">
+        <span class="stat-pill"><strong id="stat-active">0</strong> ativos</span>
+        <span class="stat-pill rent"><strong id="stat-rent">0</strong> aluguel</span>
+        <span class="stat-pill sale"><strong id="stat-sale">0</strong> venda</span>
+        <span class="stat-pill drop"><strong id="stat-drops">0</strong> baixaram</span>
+        <span class="stat-pill dup"><strong id="stat-dups">0</strong> grupos prováveis</span>
+        <span class="stat-pill dup"><strong id="stat-review">0</strong> pares para revisar</span>
+        <span class="stat-pill fav"><strong id="stat-favs">0</strong> favoritos</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-secondary" id="btn-open-maps">Mapas e quadras</button>
+        <button type="button" class="btn btn-secondary" id="btn-open-agencies">
+          Imobiliárias (<span id="stat-agencies">…</span>)
+        </button>
+        <a href="/docs" target="_blank" rel="noopener noreferrer" class="btn btn-ghost">API Docs</a>
+      </div>
+    </header>
+
+    <div id="personal-notice" class="sync-banner hidden" role="status" aria-live="polite">
+      <span id="personal-notice-text"></span>
+    </div>
+
+    <div class="layout">
+      <aside class="sidebar" aria-label="Filtros de busca">
+        <form id="filter-form">
+          <div class="filter-header">
+            <h2>Filtros</h2>
+            <button type="button" class="btn-link" id="btn-reset-filters">Limpar tudo</button>
+          </div>
+
+          <div class="purpose-tabs" role="group" aria-label="Finalidade">
+            <button type="button" class="purpose-tab active" data-purpose="">Todos</button>
+            <button type="button" class="purpose-tab" data-purpose="aluguel">Aluguel</button>
+            <button type="button" class="purpose-tab" data-purpose="venda">Comprar</button>
+          </div>
+
+          <div class="field-group">
+            <label for="f-q">Busca livre ou Código Ref.</label>
+            <input
+              type="search"
+              id="f-q"
+              name="q"
+              placeholder="Ex: Edifício Iguaçu, UTFPR, térreo, AP131..."
+              autocomplete="off"
+            />
+          </div>
+
+          <div class="field-group">
+            <label>Tipo de Imóvel</label>
+            <div id="facet-types" class="chip-grid"></div>
+          </div>
+
+          <div class="field-group">
+            <label for="nb-search">Bairro em Pato Branco</label>
+            <input
+              type="search"
+              id="nb-search"
+              class="compact-input"
+              placeholder="Filtrar bairros (ex: Fraron, Centro)..."
+              autocomplete="off"
+            />
+            <div id="facet-neighborhoods" class="checklist-box"></div>
+          </div>
+
+          <div class="field-group">
+            <label>Valores (R$)</label>
+            <div class="two-cols">
+              <input type="number" id="f-min-price" min="0" step="100" placeholder="Mínimo" aria-label="Preço mínimo" />
+              <input type="number" id="f-max-price" min="0" step="100" placeholder="Máximo" aria-label="Preço máximo" />
+            </div>
+            <div class="two-cols mt-6">
+              <input
+                type="number"
+                id="f-max-monthly"
+                min="0"
+                step="50"
+                placeholder="Total mensal máx."
+                title="Aluguel + Condomínio + IPTU máximo"
+                aria-label="Custo mensal total máximo"
+              />
+              <input
+                type="number"
+                id="f-max-m2"
+                min="0"
+                step="100"
+                placeholder="R$/m² máx."
+                title="Valor máximo por metro quadrado"
+                aria-label="Preço máximo por m²"
+              />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label>Área útil / total (m²)</label>
+            <div class="two-cols">
+              <input type="number" id="f-min-area" min="0" step="5" placeholder="Mín m²" aria-label="Área mínima" />
+              <input type="number" id="f-max-area" min="0" step="5" placeholder="Máx m²" aria-label="Área máxima" />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <div class="two-cols">
+              <div>
+                <label for="f-beds">Quartos mín.</label>
+                <select id="f-beds">
+                  <option value="">Qualquer</option>
+                  <option value="1">1+ quarto</option>
+                  <option value="2">2+ quartos</option>
+                  <option value="3">3+ quartos</option>
+                  <option value="4">4+ quartos</option>
+                </select>
+              </div>
+              <div>
+                <label for="f-suites">Suítes mín.</label>
+                <select id="f-suites">
+                  <option value="">Qualquer</option>
+                  <option value="1">1+ suíte</option>
+                  <option value="2">2+ suítes</option>
+                  <option value="3">3+ suítes</option>
+                </select>
+              </div>
+            </div>
+            <div class="two-cols mt-6">
+              <div>
+                <label for="f-baths">Banheiros mín.</label>
+                <select id="f-baths">
+                  <option value="">Qualquer</option>
+                  <option value="1">1+ banh.</option>
+                  <option value="2">2+ banh.</option>
+                  <option value="3">3+ banh.</option>
+                </select>
+              </div>
+              <div>
+                <label for="f-parking">Vagas mín.</label>
+                <select id="f-parking">
+                  <option value="">Qualquer</option>
+                  <option value="1">1+ vaga</option>
+                  <option value="2">2+ vagas</option>
+                  <option value="3">3+ vagas</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="f-furnished">Mobília</label>
+            <select id="f-furnished">
+              <option value="">Qualquer</option>
+              <option value="mobiliado">Mobiliado</option>
+              <option value="semimobiliado">Mobiliado ou Semimobiliado</option>
+              <option value="nao_mobiliado">Sem mobília</option>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label>Inteligência &amp; Comodidades</label>
+            <div class="toggle-list">
+              <label class="check-row"><input type="checkbox" id="f-only-price" /> Apenas com valor divulgado</label>
+              <label class="check-row"><input type="checkbox" id="f-review" /> Com pares semelhantes para revisar</label>
+              <label class="check-row"><input type="checkbox" id="f-dedup" /> Agrupar duplicados (menor valor)</label>
+              <label class="check-row"><input type="checkbox" id="f-drops" /> Apenas quedas de preço</label>
+              <label class="check-row"><input type="checkbox" id="f-favs" /> Apenas meus favoritos</label>
+              <label class="check-row"><input type="checkbox" id="f-pets" /> Aceita Pet</label>
+              <label class="check-row"><input type="checkbox" id="f-bbq" /> Churrasqueira / Gourmet</label>
+              <label class="check-row"><input type="checkbox" id="f-balcony" /> Sacada / Varanda</label>
+              <label class="check-row"><input type="checkbox" id="f-elevator" /> Elevador</label>
+              <label class="check-row"><input type="checkbox" id="f-pool" /> Piscina</label>
+              <label class="check-row"><input type="checkbox" id="f-yard" /> Quintal / Sobra de terreno</label>
+              <label class="check-row"><input type="checkbox" id="f-fin" /> Aceita financiamento</label>
+              <label class="check-row"><input type="checkbox" id="f-inactive" /> Incluir anúncios inativos (fora do último catálogo)</label>
+              <label class="check-row"><input type="checkbox" id="f-hidden" /> Incluir imóveis descartados</label>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <p id="local-state-info" class="local-state-info">
+              Seus favoritos e anotações ficam apenas neste navegador.
+            </p>
+            <button type="button" class="btn-link" id="btn-clear-local">Limpar dados deste navegador</button>
+          </div>
+
+          <div class="field-group">
+            <label for="ag-search">Imobiliárias</label>
+            <input
+              type="search"
+              id="ag-search"
+              class="compact-input"
+              placeholder="Filtrar imobiliária..."
+              autocomplete="off"
+            />
+            <div id="facet-agencies" class="checklist-box"></div>
+          </div>
+        </form>
+      </aside>
+
+      <main class="results-pane">
+        <div class="results-toolbar">
+          <div class="results-count" id="results-summary">Carregando imóveis...</div>
+          <div class="sort-box">
+            <label for="f-sort">Ordenar:</label>
+            <select id="f-sort">
+              <option value="menor_preco">Menor preço</option>
+              <option value="menor_custo_mensal">Menor custo mensal total</option>
+              <option value="menor_preco_m2">Menor R$/m²</option>
+              <option value="maior_desconto">Maiores quedas de preço</option>
+              <option value="maior_area">Maior área (m²)</option>
+              <option value="mais_recentes">Mais recentes no banco</option>
+              <option value="maior_preco">Maior preço</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="results-grid" class="cards-grid"></div>
+
+        <nav id="pagination" class="pagination" aria-label="Paginação"></nav>
+      </main>
+    </div>
+
+    <!-- Property Detail Modal -->
+    <dialog id="detail-modal" class="modal">
+      <div class="modal-box">
+        <header class="modal-header">
+          <div>
+            <span id="modal-badges" class="modal-badges"></span>
+            <h2 id="modal-title">Detalhes do Imóvel</h2>
+          </div>
+          <button type="button" class="btn-close" id="btn-close-detail" aria-label="Fechar">&times;</button>
+        </header>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </dialog>
+
+    <!-- Agencies Status Modal -->
+    <dialog id="agencies-modal" class="modal">
+      <div class="modal-box">
+        <header class="modal-header">
+          <div>
+            <h2>Imobiliárias cadastradas — Pato Branco</h2>
+            <p class="subtitle" id="agencies-timer-info"></p>
+          </div>
+          <div class="modal-header-actions">
+            <button type="button" class="btn-close" id="btn-close-agencies" aria-label="Fechar">&times;</button>
+          </div>
+        </header>
+        <div id="agencies-body" class="modal-body"></div>
+      </div>
+    </dialog>
+
+    <dialog id="maps-modal" class="modal">
+      <div class="modal-box">
+        <header class="modal-header">
+          <div><h2>Mapas e quadras de Pato Branco</h2><p class="subtitle">Mapas públicos e biblioteca de PDFs deste servidor</p></div>
+          <button type="button" class="btn-close" id="btn-close-maps" aria-label="Fechar">&times;</button>
+        </header>
+        <div class="modal-body">
+          <form id="maps-form" class="maps-form">
+            <label for="maps-quadra">Número da quadra</label>
+            <input id="maps-quadra" type="number" min="1" max="2500" step="1" placeholder="Ex.: 928" />
+            <button class="btn btn-primary btn-sm" type="submit">Consultar mapa</button>
+          </form>
+          <div id="maps-body" aria-live="polite"></div>
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/static/app.js"></script>
+  </body>
+</html>
