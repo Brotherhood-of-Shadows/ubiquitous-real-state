@@ -1,0 +1,11 @@
+{
+	admin off
+	persist_config off
+}
+
+# Only the Caddy on the public VPS IP handles TLS and the /imob/ prefix.
+http://:8080 {
+	encode zstd gzip
+	header -Server
+	reverse_proxy imob:8000
+}

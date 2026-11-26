@@ -1,0 +1,10 @@
+# Optional connection to a Caddy running in a separate Compose project.
+services:
+  imob-caddy:
+    networks:
+      default: {}
+      imob_proxy: {}
+
+networks:
+  imob_proxy:
+    external: true

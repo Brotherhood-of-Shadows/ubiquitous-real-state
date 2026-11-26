@@ -91,15 +91,24 @@ docker compose run --rm imob-ops imob sync --force
 docker compose run --rm imob-ops imob stats
 ```
 
-Para testar uma única fonte, adicione `--agency apolar` ao sync. Para executar apenas fontes cujo TTL expirou (6 horas por padrão), omita `--force`. Consulte `docker compose logs --tail 100 imob mysql` e `/api/sync/status` para acompanhar o serviço. O status da coleta por fonte também aparece no painel.
+Para testar uma única fonte, adicione `--agency apolar` ao sync. Para executar apenas fontes cujo TTL expirou (6 horas por padrão), omita `--force`. Consulte `docker compose logs --tail 100 imob imob-caddy mysql` e `/api/sync/status` para acompanhar o serviço. O status da coleta por fonte também aparece no painel.
 
 Para atualizar, use `docker compose up -d --build --wait` com o checkout atualizado. `docker compose down` para a aplicação, mas preserva os volumes `imob_imob-mysql` e `imob_imob-maps`. Não há backup automático. Não use `down -v` em manutenção: ele apaga o catálogo, seu histórico e os mapas importados. As credenciais iniciais do MySQL são aplicadas apenas a um volume novo; mudar `.env` sozinho não altera a conta existente.
 
-### Exposição pública no IP compartilhado — requer aprovação
+### Exposição pública no IP compartilhado
 
-O Compose do IMOB não abre as portas 80 e 443. O Caddy do cookbook já as publica e executa dentro de um contêiner: `127.0.0.1:8090` **dentro dele** não aponta para o host. Para publicar sem abrir uma porta pública adicional, crie uma rede Docker dedicada (`docker network create --internal imob_proxy`). Declare-a como rede externa nos dois arquivos Compose (`imob_proxy: {external: true}` em `networks`) e adicione-a somente aos serviços `imob` e `caddy`, mantendo as redes que eles já usam. Não conecte o proxy à rede privada do MySQL. Assim as conexões sobrevivem à recriação dos contêineres.
+O IMOB tem Caddyfile e contêiner próprios. Só `imob-caddy` publica uma porta no host, em `127.0.0.1:8090` por padrão. Ele atende por HTTP; o Caddy que já serve o IP da VPS continua sendo o único responsável pelas portas 80 e 443 e pelo certificado HTTPS. O app e o MySQL não publicam portas.
 
-No IP HTTPS existente, reserve `/imob/`. No snippet `cookbook_app` de `web/caddy/site.caddy`, acrescente o redirecionamento e o bloco do IMOB abaixo. Coloque o `encode`, o `import security_headers` e os três blocos `handle` atuais do cookbook dentro de um `handle` de fallback; mantenha `handle_errors` no nível do snippet. Isso preserva a política do IMOB nessa rota, inclusive para fotos de imobiliárias e PDFs.
+Se o Caddy público **roda no host**, use o Compose padrão do IMOB e a porta de loopback. Se ele **roda em contêiner**, como no cookbook, `127.0.0.1` aponta para o próprio contêiner. Nesse caso, crie uma rede compartilhada de proxy uma única vez e suba o IMOB com o arquivo adicional:
+
+```bash
+docker network create --internal imob_proxy
+docker compose -f compose.yaml -f compose.public.yaml up -d --build --wait
+```
+
+Reutilize os dois `-f` nas próximas atualizações do IMOB. No Compose do proxy público, declare `imob_proxy: {external: true}` em `networks` e adicione `imob_proxy: {}` às redes do serviço `caddy`, sem remover as redes atuais. Só os dois proxies precisam dessa rede; não conecte o MySQL nem o app a ela.
+
+No site HTTPS **já configurado para o IP**, adicione esta rota ao Caddyfile do proxy público, sem criar outro bloco para o mesmo IP. O `handle_path` remove `/imob` antes de encaminhar e o redirecionamento mantém a query string. O exemplo abaixo é para o **Caddy público em contêiner**:
 
 ```caddyfile
 redir /imob /imob/?{query} 308
@@ -108,13 +117,17 @@ handle_path /imob/* {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         -Server
     }
-    reverse_proxy imob:8000
+    reverse_proxy imob-caddy:8080
 }
 ```
 
-Se houver um hostname dedicado, prefira-o para isolar o armazenamento do navegador por origem. No mesmo IP e origem, as chaves dos dois apps são distintas, mas os scripts compartilham o acesso à área de `localStorage`; o caminho `/imob/` não é uma barreira de segurança.
+Para um **Caddy público no host**, troque a linha `reverse_proxy imob-caddy:8080` por `reverse_proxy 127.0.0.1:8090` (ajuste se mudou `IMOB_PORT`). Não use a rede compartilhada nesse caso.
 
-Antes de aplicar, confirme a URL pública e a janela de mudança. Valide a configuração do Caddy e guarde a versão anterior para reversão. Como o cookbook inclui o snippet na imagem, a mudança exige reconstruir o serviço Caddy. Depois, confira HTTPS, painel, API, CSS/JS e PDFs do IMOB, além das rotas existentes do cookbook. Nenhuma alteração no Caddy, no certificado ou no DNS é feita pelo Compose do IMOB.
+Se for o Caddy do cookbook, insira o trecho no snippet `cookbook_app` de `web/caddy/site.caddy`. Mova o `encode`, o `import security_headers` e os três blocos `handle` atuais do cookbook para dentro de um `handle` de fallback; mantenha `handle_errors` no nível do snippet. Assim a política de conteúdo do cookbook não substitui a do IMOB, que permite fotos externas e visualizar PDFs.
+
+O endereço público será `https://IP_DA_VPS/imob/`. Os apps mantêm chaves distintas no `localStorage`, mas compartilhar o mesmo IP e origem também compartilha acesso ao armazenamento; o caminho `/imob/` não isola os dados. Para isolar, use um hostname dedicado.
+
+Valide a configuração do proxy público antes de aplicá-la e guarde a anterior para reversão. Se o proxy for o do cookbook, o snippet faz parte da imagem e a alteração exige reconstruir seu serviço Caddy. Confira o painel, `/imob/api/health`, CSS/JS, PDFs importados e as rotas já atendidas pelo proxy público. O Compose do IMOB não altera o proxy público, o certificado nem o DNS.
 
 O pacote portátil do Windows com SQLite foi descontinuado na versão 0.2.0.
 
