@@ -39,7 +39,16 @@
     </div>
 
     <div class="layout">
-      <aside class="sidebar" aria-label="Filtros de busca">
+      <button
+        type="button"
+        id="btn-toggle-filters"
+        class="btn btn-outline filters-toggle"
+        aria-expanded="false"
+        aria-controls="filter-panel"
+      >
+        Filtros <span id="active-filter-count" class="filter-count hidden"></span>
+      </button>
+      <aside id="filter-panel" class="sidebar is-collapsed" aria-label="Filtros de busca">
         <form id="filter-form">
           <div class="filter-header">
             <h2>Filtros</h2>
@@ -207,6 +216,10 @@
               autocomplete="off"
             />
             <div id="facet-agencies" class="checklist-box"></div>
+          </div>
+
+          <div class="filters-mobile-actions">
+            <button type="button" class="btn btn-primary" id="btn-show-results">Ver resultados</button>
           </div>
         </form>
       </aside>

@@ -42,9 +42,7 @@ body {
 
 /* Topbar */
 .topbar {
-  position: sticky;
-  top: 0;
-  z-index: 40;
+  position: static;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -184,6 +182,25 @@ body {
   padding: 0;
 }
 
+.filters-toggle,
+.filters-mobile-actions {
+  display: none;
+}
+
+.filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
 /* Main 2-column layout */
 .layout {
   display: grid;
@@ -199,6 +216,55 @@ body {
   .layout {
     grid-template-columns: 1fr;
   }
+
+  .filters-toggle {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .sidebar {
+    position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .sidebar.is-collapsed {
+    display: none;
+  }
+
+  .filters-mobile-actions {
+    display: block;
+    position: sticky;
+    bottom: 0;
+    padding: 10px 0 0;
+    background: var(--surface);
+  }
+
+  .filters-mobile-actions .btn {
+    width: 100%;
+  }
+
+  input[type="search"],
+  input[type="number"],
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .chip,
+  .btn-icon,
+  .purpose-tab,
+  .btn-sm,
+  .check-row {
+    min-height: 40px;
+  }
+
+  .checklist-box {
+    max-height: 220px;
+  }
 }
 
 /* Sidebar Filters */
@@ -209,8 +275,8 @@ body {
   padding: 16px;
   box-shadow: var(--shadow);
   position: sticky;
-  top: 74px;
-  max-height: calc(100vh - 92px);
+  top: 12px;
+  max-height: calc(100vh - 24px);
   overflow-y: auto;
 }
 
@@ -385,7 +451,7 @@ textarea {
 
 .cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
   gap: 16px;
 }
 
@@ -400,9 +466,11 @@ textarea {
   transition: transform 0.14s ease, box-shadow 0.14s ease;
 }
 
-.prop-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+@media (hover: hover) {
+  .prop-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.1);
+  }
 }
 
 .prop-card.is-hidden-card {
@@ -483,8 +551,14 @@ textarea {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  min-width: 0;
   font-size: 11.5px;
   color: var(--muted);
+}
+
+.card-agency-line > * {
+  overflow-wrap: anywhere;
 }
 
 .card-title {
@@ -520,6 +594,7 @@ textarea {
   font-size: 17px;
   font-weight: 800;
   color: #0f172a;
+  overflow-wrap: anywhere;
 }
 
 .price-sub {
@@ -565,6 +640,7 @@ textarea {
   padding-top: 9px;
   border-top: 1px solid #eef2f6;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
@@ -661,7 +737,7 @@ textarea {
 
 .gallery-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr));
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -748,6 +824,8 @@ textarea {
 
 .duplicate-peer-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   justify-content: space-between;
   padding: 4px 0;
   border-bottom: 1px solid #e2e8f0;
@@ -761,3 +839,70 @@ textarea {
 .maps-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
 .maps-form input { max-width: 180px; }
 .quadra-pdf { width: 100%; height: 65vh; border: 1px solid var(--border); margin: 12px 0; }
+
+@media (max-width: 640px) {
+  .layout {
+    padding: 12px 10px 32px;
+    gap: 12px;
+  }
+
+  .topbar {
+    padding: 10px 12px;
+  }
+
+  .topbar .subtitle {
+    display: none;
+  }
+
+  .topbar-actions {
+    width: 100%;
+  }
+
+  .topbar-actions .btn {
+    flex: 1 1 0;
+  }
+
+  .stat-pill {
+    font-size: 11px;
+    padding: 3px 8px;
+  }
+
+  .results-toolbar {
+    padding: 10px 12px;
+  }
+
+  .sort-box {
+    width: 100%;
+  }
+
+  .sort-box select {
+    min-width: 0;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .card-media {
+    height: 180px;
+  }
+
+  .modal {
+    width: calc(100vw - 16px);
+    max-height: 90vh;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .modal-box {
+    max-height: 90vh;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .modal-header,
+  .modal-body {
+    padding-inline: 14px;
+  }
+
+  .maps-form input {
+    max-width: none;
+    flex: 1 1 120px;
+  }
+}

@@ -86,6 +86,8 @@ curl -fsS http://127.0.0.1:8090/api/health
 
 O painel fica em <http://127.0.0.1:8090/> no host. O MySQL não publica porta. O catálogo começa vazio; aguarde o próximo horário ou execute uma primeira coleta em um horário aprovado:
 
+**Uso no celular:** em telas estreitas (celulares e tablets), os filtros começam recolhidos para não cobrir os anúncios e abrem pelo botão **Filtros** acima da lista de resultados.
+
 ```bash
 docker compose run --rm imob-ops imob sync --force
 docker compose run --rm imob-ops imob stats

@@ -105,6 +105,31 @@ export function safeHttpUrl(rawUrl) {
 }
 
 /**
+ * Count active user filters in serialized search query parameters.
+ *
+ * Ignores pagination/sorting (`page`, `page_size`, `sort`) and the default
+ * `only_with_price="false"` parameter.
+ *
+ * @param {URLSearchParams} params
+ * @returns {number}
+ */
+export function countActiveFilters(params) {
+  let count = 0;
+  for (const [key, value] of params.entries()) {
+    if (key === "page" || key === "page_size" || key === "sort") {
+      continue;
+    }
+    if (key === "only_with_price" && value === "false") {
+      continue;
+    }
+    if (value.trim().length > 0) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
  * Format a numeric BRL amount safely.
  *
  * @param {number|null|undefined} value
@@ -347,11 +372,35 @@ export class DashboardController {
   }
 
   /**
+   * Expand or collapse the mobile filter disclosure panel.
+   *
+   * @param {boolean} expanded
+   * @returns {void}
+   */
+  setFiltersExpanded(expanded) {
+    const panel = mustGetById("filter-panel");
+    const toggle = mustGetById("btn-toggle-filters");
+    panel.classList.toggle("is-collapsed", !expanded);
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  }
+
+  /**
    * Attach DOM event handlers for filters, buttons, and modals.
    *
    * @returns {void}
    */
   bindEvents() {
+    const toggleBtn = mustGetById("btn-toggle-filters");
+    toggleBtn.addEventListener("click", () => {
+      const expanded = toggleBtn.getAttribute("aria-expanded") === "true";
+      this.setFiltersExpanded(!expanded);
+    });
+
+    mustGetById("btn-show-results").addEventListener("click", () => {
+      this.setFiltersExpanded(false);
+      mustGetById("btn-toggle-filters").focus();
+    });
+
     const form = /** @type {HTMLFormElement} */ (mustGetById("filter-form"));
     form.addEventListener("submit", (ev) => {
       ev.preventDefault();
@@ -811,6 +860,12 @@ export class DashboardController {
     this.searchAbortController = controller;
 
     const params = this.buildQueryParams();
+    const activeCount = countActiveFilters(params);
+    const countEl = mustGetById("active-filter-count");
+    countEl.textContent = String(activeCount);
+    countEl.classList.toggle("hidden", activeCount === 0);
+    mustGetById("btn-toggle-filters").setAttribute("aria-label", `Filtros, ${activeCount} ativos`);
+
     const nextUrl = `${window.location.pathname}?${params.toString()}`;
     window.history.replaceState(null, "", nextUrl);
 
