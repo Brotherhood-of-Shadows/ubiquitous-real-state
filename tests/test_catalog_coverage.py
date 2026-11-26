@@ -209,7 +209,18 @@ async def test_widesys_preserves_search_filters_and_reports_http_500(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A failed sales section must not appear complete, and pagination must retain its search filters."""
-    agency = AGENCIES_BY_SLUG["duo"]
+    agency = AGENCIES_BY_SLUG["duo"].model_copy(
+        update={
+            "entry_urls": (
+                (ListingPurpose.RENT, "https://duoimoveispb.com.br/imoveis-locacao"),
+                (
+                    ListingPurpose.SALE,
+                    "https://duoimoveispb.com.br/busca?filter[categoria_catid]=-40"
+                    "&filter[endereco_cid][]=1",
+                ),
+            ),
+        }
+    )
 
     def handle(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/imoveis-locacao":
@@ -232,4 +243,51 @@ async def test_widesys_preserves_search_filters_and_reports_http_500(
             .fetch_catalog(agency, max_pages=2)
         )
     assert result.had_section_errors
-    assert "HTTP 500" in (result.error_summary or "")
+    assert result.error_summary == (
+        "HTTP 500 at https://duoimoveispb.com.br/busca?filter%5Bcategoria_catid%5D=-40"
+        "&filter%5Bendereco_cid%5D%5B%5D=1&start=0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_duo_uses_city_sales_page_and_stops_at_empty_paginator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crowded single-page catalog is complete; keep separately labeled sale and rental prices."""
+    agency = AGENCIES_BY_SLUG["duo"]
+    paths: list[str] = []
+    dual_card = """<div class="featured-thumb"><span class="sale">Aluguel , Venda</span>
+      <a href="/imoveis-locacao/1001-apartamento-centro-pato-branco">Apartamento em Pato Branco</a>
+      <div class="price"><span title="Aluguel">CONSULTE /mês</span>
+      <span title="Venda">R$ 1.100.000,00</span></div></div>"""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.params == httpx.QueryParams({"start": "0"})
+        path = request.url.path
+        paths.append(path)
+        if path == "/imoveis-locacao":
+            cards = dual_card
+        else:
+            assert path == "/imoveis/imoveis-a-venda/ac/pato-branco"
+            cards = dual_card + "".join(_card(i, "Disponível") for i in range(1, 14))
+        return httpx.Response(200, text=cards + '<div class="pagination"></div>')
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client)
+    async with PoliteHttpClient(per_domain_delay_seconds=0) as http:
+        scraper = PlatformScraperRegistry(http).get_scraper(agency.platform)
+        result = await scraper.fetch_catalog(agency, max_pages=3)
+
+    assert paths == ["/imoveis-locacao", "/imoveis/imoveis-a-venda/ac/pato-branco"]
+    assert not result.had_section_errors
+    assert (result.requests_made, len(result.items)) == (2, 15)
+    dual_items = [item for item in result.items if item.external_id == "1001"]
+    assert len(dual_items) == 2
+    for item in dual_items:
+        normalized = normalize_scraped_item(item, agency)
+        assert normalized is not None
+        assert (normalized.purpose, normalized.sale_price, normalized.rent_price) == (
+            ListingPurpose.BOTH,
+            1_100_000,
+            None,
+        )

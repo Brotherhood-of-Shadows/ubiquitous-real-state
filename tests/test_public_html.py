@@ -209,6 +209,65 @@ def test_base_href_and_imobibrasil_pagination_are_resolved_as_catalog_controls()
     assert next_url == "https://www.alvaroimoveis.imb.br/imovel/venda/?pag=2"
 
 
+@pytest.mark.asyncio
+async def test_alvaro_new_catalog_follows_pager_and_reads_slug_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read all current sections, including slug cards and cities outside Pato Branco."""
+    agency = AGENCIES_BY_SLUG["alvaro"]
+    visits: list[str] = []
+
+    def card(slug: str, purpose: str, location: str, price: str) -> str:
+        return f"""<article class="pcard"><a class="pcard__link" href="/imovel/{slug}">
+          <img src="/uploads/casa.jpeg"><span class="pcard__tag">Casa</span>
+          <span class="pcard__tag pcard__tag--purpose">{purpose}</span>
+          <p class="pcard__price">{price}</p><h3 class="pcard__title">Casa Azul</h3>
+          <p class="pcard__loc">{location}</p><ul class="pcard__facts">
+          <li title="Quartos">3</li><li title="Banheiros">2</li><li title="Vagas">1</li>
+          <li title="Área">138,50 m²</li></ul></a></article>"""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        visits.append(request.url.raw_path.decode())
+        if request.url.path == "/locacao":
+            html = card("casa-azul", "Locação", "Centro, Pato Branco", "R$ 2.400,00 /mês")
+        elif request.url.path == "/venda":
+            html = card("casa-verde", "Venda", "Pato Branco", "R$ 450.000,00")
+            html += """<nav aria-label="Paginação" class="pager">
+              <a aria-label="Próxima página" href="/imoveis?finalidade=venda&amp;page=2"></a>
+            </nav>"""
+        elif request.url.path == "/venda-locacao":
+            html = card(
+                "casa-amarela", "Venda/Locação", "Centro, Pato Branco", "R$ 3.500,00 <small>/mês</small>"
+            )
+        else:
+            assert request.url.path == "/imoveis"
+            assert request.url.params == httpx.QueryParams({"finalidade": "venda", "page": "2"})
+            html = card("casa-amarela-2", "Venda", "Centro, Vitorino", "R$ 340.000,00")
+        return httpx.Response(200, text=html + '<nav><a href="/imovel/venda/">Venda</a></nav>')
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client)
+    async with PoliteHttpClient(per_domain_delay_seconds=0) as http:
+        result = await PublicHtmlScraper(http).fetch_catalog(agency, max_pages=2)
+
+    assert visits == ["/locacao", "/venda", "/imoveis?finalidade=venda&page=2", "/venda-locacao"]
+    assert (result.requests_made, result.had_section_errors) == (4, False)
+    rent, sale, outside, dual = result.items
+    assert rent.source_url == f"{agency.base_url}/imovel/casa-azul"
+    assert (rent.external_id, rent.title, rent.raw_type) == ("casa-azul", "Casa Azul", "Casa")
+    assert (rent.raw_city, rent.raw_neighborhood, rent.rent_price) == ("Pato Branco", "Centro", 2400)
+    assert (rent.bedrooms, rent.bathrooms, rent.parking_spots, rent.area_total_m2) == (3, 2, 1, 138.5)
+    assert rent.image_urls == (f"{agency.base_url}/uploads/casa.jpeg",)
+    assert (sale.raw_city, sale.raw_neighborhood, sale.sale_price) == ("Pato Branco", None, 450_000)
+    assert normalize_scraped_item(rent, agency) is not None
+    assert normalize_scraped_item(sale, agency) is not None
+    assert outside.raw_city == "Vitorino"
+    assert normalize_scraped_item(outside, agency) is None
+    mixed = normalize_scraped_item(dual, agency)
+    assert mixed is not None
+    assert (mixed.purpose, mixed.sale_price, mixed.rent_price) == (ListingPurpose.BOTH, None, 3500)
+
+
 def test_category_after_sale_badge_does_not_become_a_city() -> None:
     """Use the verified city-filter context without turning 'Casa - Bairro' into a city name."""
     agency = AGENCIES_BY_SLUG["valen"]

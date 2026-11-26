@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from urllib.parse import parse_qsl, urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 
@@ -42,7 +42,7 @@ def parse_widesys_listing_html(
         default_purpose: Section purpose (`aluguel` or `venda`).
 
     Returns:
-        Tuple of `(parsed_items, inferred_page_step)`.
+        Tuple of `(parsed_items, inferred_page_step)`. An empty pagination widget gives step 0.
     """
     soup = BeautifulSoup(html, "lxml")
     starts = sorted(
@@ -54,7 +54,12 @@ def parse_widesys_listing_html(
             if m and int(m.group(1)) > 0
         }
     )
-    page_step = starts[0] if starts else 21
+    if starts:
+        page_step = starts[0]
+    elif soup.select_one(".pagination") and not soup.select_one(".pagination a[href]"):
+        page_step = 0
+    else:
+        page_step = 21
 
     modern_cards = soup.select(".featured-thumb")
     if modern_cards:
@@ -119,17 +124,32 @@ def _parse_modern_card(
     # Purpose badge (.sale)
     badge_el = card.select_one(".sale")
     badge_txt = badge_el.get_text(" ", strip=True) if badge_el else ""
-    purpose_str = default_purpose.value
-    if re.search(r"(?i)alug|loca", badge_txt):
-        purpose_str = ListingPurpose.RENT.value
-    elif re.search(r"(?i)compr|vend", badge_txt):
-        purpose_str = ListingPurpose.SALE.value
+    offers_rent = bool(re.search(r"(?i)alug|loca", badge_txt))
+    offers_sale = bool(re.search(r"(?i)compr|vend", badge_txt))
+    purpose = default_purpose
+    if offers_rent and offers_sale:
+        purpose = ListingPurpose.BOTH
+    elif offers_rent:
+        purpose = ListingPurpose.RENT
+    elif offers_sale:
+        purpose = ListingPurpose.SALE
 
-    # Price
     price_el = card.select_one(".price")
-    price_val = parse_brl(price_el.get_text(" ", strip=True)) if price_el else None
-    sale_price = price_val if purpose_str == ListingPurpose.SALE.value else None
-    rent_price = price_val if purpose_str == ListingPurpose.RENT.value else None
+    sale_price, rent_price = None, None
+    if price_el and purpose == ListingPurpose.BOTH:
+        for amount in price_el.select("[title]"):
+            label = str(amount.get("title", "")).lower()
+            value = parse_brl(amount.get_text(" ", strip=True))
+            if "alug" in label or "loca" in label:
+                rent_price = value
+            elif "vend" in label or "compr" in label:
+                sale_price = value
+    elif price_el:
+        value = parse_brl(price_el.get_text(" ", strip=True))
+        if purpose == ListingPurpose.SALE:
+            sale_price = value
+        else:
+            rent_price = value
 
     # Type & Title & Address
     type_el = card.select_one(".featured-thumb-data h5")
@@ -201,7 +221,7 @@ def _parse_modern_card(
         external_id=ext_id,
         source_url=prop_href,
         is_available=not any(text.strip().lower() in _UNAVAILABLE_LABELS for text in card.stripped_strings),
-        raw_purpose=purpose_str,
+        raw_purpose=purpose.value,
         raw_type=raw_type,
         ref_code=ref_code,
         title=title,
@@ -473,7 +493,8 @@ class WidesysScraper:
                     break
                 if status >= 400:
                     had_errors = True
-                    errors.append(f"HTTP {status} at {section_url}?start={offset}")
+                    request_url = urlparse(section_url)._replace(query=urlencode(params)).geturl()
+                    errors.append(f"HTTP {status} at {request_url}")
                     break
 
                 page_items, step = parse_widesys_listing_html(
@@ -497,7 +518,7 @@ class WidesysScraper:
                     seen_in_section.add(it.external_id)
                     collected.append(it)
 
-                if len(page_items) < max(3, section_step // 2):
+                if step == 0 or len(page_items) < max(3, section_step // 2):
                     break
                 offset += section_step
 

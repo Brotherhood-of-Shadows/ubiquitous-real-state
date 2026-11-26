@@ -20,6 +20,7 @@ from imob.scrapers.parsing import (
     has_empty_catalog_notice,
     parse_area_m2,
     parse_brl,
+    parse_first_int,
     parse_generic_detail_html,
 )
 
@@ -27,9 +28,10 @@ _LINK_SELECTOR = "a[href], [data-href], [data-url], [onclick]"
 _PROPERTY_PATH = re.compile(
     r"^/(?:imovel/([\w-]{1,96})(?:/|$)|ver-imovel/(\d{1,20})(?:-|/|$)|show/(\d{1,20})(?:/|$))"
 )
+_CARD_SLUG_PATH = re.compile(r"/imovel/([\w-]{1,96})/?")
 _PAGING_KEYS = frozenset({"pagina", "page", "pag", "pg", "p", "start", "offset"})
 _MORE_LABELS = frozenset({"ver mais", "carregar mais", "mostrar mais"})
-_NEXT_LABELS = _MORE_LABELS | {"proxima", "proximo", "next", "seguinte", ">", "›", "»"}
+_NEXT_LABELS = _MORE_LABELS | {"proxima", "proximo", "proxima pagina", "next", "seguinte", ">", "›", "»"}
 _UNAVAILABLE = frozenset({"vendido", "vendida", "locado", "locada", "alugado", "alugada"})
 
 
@@ -65,8 +67,13 @@ def _element_url(tag: Tag, page_url: str) -> str | None:
 
 def _property_link(tag: Tag, page_url: str) -> tuple[str, str] | None:
     url = _element_url(tag, page_url)
-    match = _PROPERTY_PATH.match(urlparse(url).path) if url else None
-    if match and url:
+    if not url:
+        return None
+    path = urlparse(url).path
+    if "pcard__link" in (tag.get("class") or []) and (slug := _CARD_SLUG_PATH.fullmatch(path)):
+        return slug.group(1), url
+    match = _PROPERTY_PATH.match(path)
+    if match:
         external_id = match.group(1) or match.group(2) or match.group(3)
         if any(char.isdigit() for char in external_id):
             return external_id, url
@@ -242,6 +249,51 @@ def _parse_card(
     )
 
 
+def _parse_pcard(
+    anchor: Tag,
+    external_id: str,
+    source_url: str,
+    agency_slug: str,
+    default_purpose: ListingPurpose,
+) -> RawScrapedItem:
+    def text(selector: str) -> str:
+        el = anchor.select_one(selector)
+        return el.get_text(" ", strip=True) if el else ""
+
+    purpose = {
+        "locacao": ListingPurpose.RENT,
+        "venda": ListingPurpose.SALE,
+        "venda/locacao": ListingPurpose.BOTH,
+    }.get(_fold(text(".pcard__tag--purpose")), default_purpose)
+    price_text = text(".pcard__price")
+    price = parse_brl(price_text)
+    monthly_price = _fold(price_text).endswith("/mes")
+    is_rent_price = purpose == ListingPurpose.RENT or (purpose == ListingPurpose.BOTH and monthly_price)
+    neighborhood, _, city = text(".pcard__loc").rpartition(",")
+    return RawScrapedItem(
+        agency_slug=agency_slug,
+        external_id=external_id,
+        source_url=source_url,
+        title=text(".pcard__title"),
+        raw_type=text(".pcard__tag:not(.pcard__tag--purpose)"),
+        raw_purpose=purpose.value,
+        raw_city=city.strip() or None,
+        raw_neighborhood=neighborhood.strip() or None,
+        is_available=not any(_fold(value).strip() in _UNAVAILABLE for value in anchor.stripped_strings),
+        sale_price=price if purpose == ListingPurpose.SALE else None,
+        rent_price=price if is_rent_price else None,
+        bedrooms=parse_first_int(text('.pcard__facts [title="Quartos"]')),
+        bathrooms=parse_first_int(text('.pcard__facts [title="Banheiros"]')),
+        parking_spots=parse_first_int(text('.pcard__facts [title="Vagas"]')),
+        area_total_m2=parse_area_m2(text('.pcard__facts [title="Área"]')),
+        image_urls=tuple(
+            dict.fromkeys(
+                url for img in anchor.find_all("img") if (url := extract_image_from_tag(img, source_url))
+            )
+        ),
+    )
+
+
 def _pagination(soup: BeautifulSoup, page_url: str, link_base: str) -> tuple[str | None, bool]:
     current_query = parse_qs(urlparse(page_url).query)
     current = next(
@@ -397,7 +449,8 @@ def parse_public_catalog_html(
     link_base = _local_url(str(base["href"]), page_url) if base else page_url
     link_base = link_base or page_url
     for noisy in soup.select(
-        "script, style, header, footer, nav, noscript, .related, .similares, .small-property-list"
+        "script, style, header, footer, nav:not(.pager), noscript, "
+        ".related, .similares, .small-property-list"
     ):
         noisy.decompose()
     links: dict[str, list[tuple[Tag, str]]] = {}
@@ -407,10 +460,13 @@ def parse_public_catalog_html(
     items: list[RawScrapedItem] = []
     for external_id, anchors in links.items():
         anchor, source_url = max(anchors, key=lambda pair: len(pair[0].get_text(" ", strip=True)))
-        card = _card_container(anchor, external_id, link_base)
-        items.append(
-            _parse_card(card, anchor, external_id, source_url, agency_slug, base_url, default_purpose)
-        )
+        if "pcard__link" in (anchor.get("class") or []):
+            items.append(_parse_pcard(anchor, external_id, source_url, agency_slug, default_purpose))
+        else:
+            card = _card_container(anchor, external_id, link_base)
+            items.append(
+                _parse_card(card, anchor, external_id, source_url, agency_slug, base_url, default_purpose)
+            )
     next_url, unresolved = _pagination(soup, page_url, link_base)
     return items, next_url, unresolved
 

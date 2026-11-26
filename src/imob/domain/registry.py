@@ -62,10 +62,7 @@ AGENCIES: tuple[AgencyConfig, ...] = (
         platform=PlatformKind.WIDESYS,
         entry_urls=(
             (_RENT, "https://duoimoveispb.com.br/imoveis-locacao"),
-            (
-                _SALE,
-                "https://duoimoveispb.com.br/localizar/localizar-imovel?filter[categoria_catid]=-40&filter[endereco_cid][]=1",
-            ),
+            (_SALE, "https://duoimoveispb.com.br/imoveis/imoveis-a-venda/ac/pato-branco"),
         ),
     ),
     _widesys("mattia", "Mattia Corretores", "https://mattiacorretores.com.br", has_rent=False),
@@ -397,8 +394,9 @@ AGENCIES: tuple[AgencyConfig, ...] = (
         base_url="https://www.alvaroimoveis.imb.br",
         platform=PlatformKind.PUBLIC_HTML,
         entry_urls=(
-            (_RENT, "https://www.alvaroimoveis.imb.br/imoveis/2-locacao"),
-            (_SALE, "https://www.alvaroimoveis.imb.br/imoveis/1-venda"),
+            (_RENT, "https://www.alvaroimoveis.imb.br/locacao"),
+            (_SALE, "https://www.alvaroimoveis.imb.br/venda"),
+            (_BOTH, "https://www.alvaroimoveis.imb.br/venda-locacao"),
         ),
         default_city_assumed=False,
     ),
